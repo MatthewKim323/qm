@@ -142,7 +142,7 @@ function sameInput(actual: unknown, expected: Record<string, unknown>): boolean 
   );
 }
 
-export function nativeReply(body: Record<string, unknown>, fixtureId: string, shapes?: NativeShape[]) {
+export function nativeTurn(body: Record<string, unknown>) {
   workloadCheck(Array.isArray(body.messages) && body.messages.length > 0, "Native messages required");
   const messages = body.messages as Message[];
   let index = messages.length - 1;
@@ -161,20 +161,19 @@ export function nativeReply(body: Record<string, unknown>, fixtureId: string, sh
   }
   if (index < 0) return null;
   const origin = text(messages[index]!.content);
-  const matches = [...origin.matchAll(/\[qm-perf-native:([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)\]/g)];
-  if (!matches.length) return null;
-  workloadCheck(matches.length === 1 && matches[0]![1] === fixtureId, "One matching native fixture marker required");
-  const shape = shapes?.find((candidate) => candidate.name === matches[0]![2]);
-  workloadCheck(shape && body.model === shape.model && body.stream === true, "Admitted native model/shape required");
-  const nonce = matches[0]![3]!;
+  return { origin, pairs };
+}
+
+export function nativeShapeReply(
+  body: Record<string, unknown>,
+  turn: NonNullable<ReturnType<typeof nativeTurn>>,
+  shape: NativeShape,
+  nonce: string,
+  terminal?: string,
+) {
+  const { pairs } = turn;
+  workloadCheck(body.model === shape.model && body.stream === true, "Admitted native model/shape required");
   workloadCheck(pairs.length < shape.modelCalls, "Native model budget exhausted");
-  if (shape.terminal === "loop-intake-empty") {
-    workloadCheck(
-      (origin.match(/^\[Loop intake\]$/gm) ?? []).length === 1 && origin.includes("[End loop intake]"),
-      "Native intake stage required",
-    );
-    workloadCheck(!/^\[Loop (work|judge)\]$/m.test(origin), "Only native intake admitted");
-  }
   let operationIndex = 0;
   pairs.forEach((pair, step) => {
     const expected = batch(shape, nonce, step);
@@ -240,9 +239,10 @@ export function nativeReply(body: Record<string, unknown>, fixtureId: string, sh
     );
   }
   const final =
-    shape.terminal === "loop-intake-empty"
+    terminal ??
+    (shape.terminal === "loop-intake-empty"
       ? '{"items":[]}'
-      : syntheticText(`${nonce}:final`, shape.outputBytes, shape.repeatedFraction);
+      : syntheticText(`${nonce}:final`, shape.outputBytes, shape.repeatedFraction));
   return {
     rule: `native:${shape.name}:${step}`,
     text: tools.length ? syntheticText(`${nonce}:${step}`, shape.outputBytes, shape.repeatedFraction) : final,
@@ -257,4 +257,24 @@ export function nativeReply(body: Record<string, unknown>, fixtureId: string, sh
     },
     pacing: shape,
   };
+}
+
+export function nativeReply(body: Record<string, unknown>, fixtureId: string, shapes?: NativeShape[]) {
+  const turn = nativeTurn(body);
+  if (!turn) return null;
+  const { origin } = turn;
+  const matches = [...origin.matchAll(/\[qm-perf-native:([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)\]/g)];
+  if (!matches.length) return null;
+  workloadCheck(matches.length === 1 && matches[0]![1] === fixtureId, "One matching native fixture marker required");
+  const shape = shapes?.find((candidate) => candidate.name === matches[0]![2]);
+  workloadCheck(shape && body.model === shape.model && body.stream === true, "Admitted native model/shape required");
+  const nonce = matches[0]![3]!;
+  if (shape.terminal === "loop-intake-empty") {
+    workloadCheck(
+      (origin.match(/^\[Loop intake\]$/gm) ?? []).length === 1 && origin.includes("[End loop intake]"),
+      "Native intake stage required",
+    );
+    workloadCheck(!/^\[Loop (work|judge)\]$/m.test(origin), "Only native intake admitted");
+  }
+  return nativeShapeReply(body, turn, shape, nonce);
 }

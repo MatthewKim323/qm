@@ -15,6 +15,7 @@ import {
 import type { WorkloadFixture } from "./workload.ts";
 import { materializeReply, validateMaterializeShape, type MaterializeShape } from "./workload-materialize.ts";
 import { nativeReply, validateNativeShapes, type NativeShape } from "./workload-native.ts";
+import { createLoopResponder, type LoopPlan } from "./workload-loop.ts";
 
 interface ResponsePacing {
   delayMs: number;
@@ -32,6 +33,7 @@ export interface CompanionProfile {
   loop?: ResponsePacing & { model: string; shipAction: string };
   materialize?: MaterializeShape;
   nativeShapes?: NativeShape[];
+  loopPlans?: LoopPlan[];
 }
 
 export function promptSha256(text: string): string {
@@ -196,6 +198,7 @@ function validateCompanion(
   }
   if (profile.materialize) validateMaterializeShape(profile.materialize);
   if (profile.nativeShapes) validateNativeShapes(profile.nativeShapes);
+  workloadCheck(!profile.loopPlans || !profile.loop, "Finite and legacy loop admission cannot overlap");
   if (profile.loop) workloadCheck(/^[a-zA-Z0-9_-]+$/.test(profile.loop.shipAction), "Safe loop ship action required");
   for (const rule of [...profile.utilities, ...(profile.loop ? [profile.loop] : [])]) {
     workloadCheck(typeof rule.model === "string" && rule.model.length > 0, "Rule model required");
@@ -227,6 +230,9 @@ export async function createWorkloadCompanion(
 ) {
   const token = validateCompanion(profile, providerProfile, fixture, env);
   const profileSha256 = promptSha256(JSON.stringify(profile));
+  const loops = profile.loopPlans
+    ? await createLoopResponder(profile.loopPlans, profile.nativeShapes ?? [], fixture.fixtureId)
+    : undefined;
   let resolveProviderIdle: (() => void) | undefined;
   let resolveCompanionIdle: (() => void) | undefined;
   let closing: Promise<void> | undefined;
@@ -262,6 +268,7 @@ export async function createWorkloadCompanion(
           model: providerProfile.model,
           totals: provider.totals,
           companionTotals: totals,
+          ...(loops ? { loopPlan: loops.snapshot() } : {}),
           qualified: false,
         }),
       );
@@ -299,6 +306,8 @@ export async function createWorkloadCompanion(
     let error: string | null = null;
     let streaming = false;
     let native: Record<string, unknown> | undefined;
+    let loopCall: ReturnType<NonNullable<typeof loops>["begin"]> = null;
+    let responseComplete = false;
     totals.active++;
     totals.maxActive = Math.max(totals.maxActive, totals.active);
     try {
@@ -319,7 +328,14 @@ export async function createWorkloadCompanion(
       }
       workloadCheck(body && typeof body === "object" && !Array.isArray(body), "Request object required");
       systemSha256 = promptSha256(body.system === undefined ? "" : textContent(body.system, true));
-      const reply = companionReply(body, profile);
+      loopCall = loops?.begin(body) ?? null;
+      const reply = loopCall ? { ...loopCall.reply, systemSha256 } : companionReply(body, profile);
+      const completion = loopCall
+        ? new Promise<boolean>((resolve) => {
+            res.once("finish", () => resolve(true));
+            res.once("close", () => resolve(false));
+          })
+        : undefined;
       streaming = body.stream === true;
       if (!reply) {
         workloadCheck(
@@ -420,12 +436,17 @@ export async function createWorkloadCompanion(
       });
       send("message_stop", {});
       res.end();
+      if (completion) {
+        responseComplete = await completion;
+        workloadCheck(responseComplete, "Native loop response did not finish");
+      }
     } catch (caught) {
       totals.errors++;
       error = caught instanceof Error ? caught.message : "Companion failure";
       if (!res.headersSent) res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { type: "invalid_request_error", message: error } }));
     } finally {
+      loopCall?.finish(responseComplete && error === null);
       totals.active--;
       totals.requestBytes += requestBytes;
       totals.responseBytes += responseBytes;
@@ -442,6 +463,7 @@ export async function createWorkloadCompanion(
         responseId,
         streaming,
         ...(native ? { native } : {}),
+        ...(loopCall ? { loop: { ...loopCall.reply.loop, responseComplete } } : {}),
         startedAt,
         finishedAt: Date.now(),
         firstDeltaAt,
@@ -459,6 +481,7 @@ export async function createWorkloadCompanion(
     totals,
     provider,
     profileSha256,
+    loops,
     close: () =>
       (closing ??= (async () => {
         await Promise.all([stop(server), stop(provider.server)]);
