@@ -215,7 +215,10 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
         );
         const shape = shapes.find((candidate) => candidate.name === expected.shape)!;
         const nonce = `${instanceId}.${index}.${state.occurrence}.${state.stage}`;
-        const reply = nativeShapeReply(body, turn, shape, nonce, terminal(plan, stage, occurrence.item, sourceKey));
+        const reply = nativeShapeReply(body, turn, shape, nonce, terminal(plan, stage, occurrence.item, sourceKey), {
+          fixtureId,
+          shapes,
+        });
         state.active = true;
         state.origin = turn.origin;
         const loop = {
