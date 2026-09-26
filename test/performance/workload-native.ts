@@ -247,6 +247,22 @@ function sameInput(actual: unknown, expected: Record<string, unknown>): boolean 
   );
 }
 
+export function nativeTaskText(origin: string): string {
+  const offset = origin.indexOf("\n\n<environment>\n");
+  if (offset < 0) {
+    workloadCheck(!/<\/?environment>/.test(origin), "Malformed native environment suffix");
+    return origin;
+  }
+  const suffix = origin.slice(offset + "\n\n<environment>\n".length);
+  workloadCheck(
+    suffix.endsWith("\n</environment>") &&
+      suffix.slice(0, -"\n</environment>".length).trim().length > 0 &&
+      !/<\/?environment>/.test(suffix.slice(0, -"\n</environment>".length)),
+    "One complete native environment suffix required",
+  );
+  return origin.slice(0, offset);
+}
+
 export function nativeTurn(body: Record<string, unknown>) {
   workloadCheck(Array.isArray(body.messages) && body.messages.length > 0, "Native messages required");
   const messages = body.messages as Message[];

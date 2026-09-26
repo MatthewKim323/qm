@@ -9,7 +9,13 @@ import { createLoopOutputStore } from "../../src/loops/output-store.ts";
 import { createShipGrantStore } from "../../src/loops/ship-grant-store.ts";
 import { createMemoryMap } from "../../src/persistence/durable-map.ts";
 import type { Loop } from "../../src/types.ts";
-import { nativeShapeReply, nativeTurn, validateNativeShapes, type NativeShape } from "./workload-native.ts";
+import {
+  nativeShapeReply,
+  nativeTaskText,
+  nativeTurn,
+  validateNativeShapes,
+  type NativeShape,
+} from "./workload-native.ts";
 import { workloadCheck } from "./workload-provider.ts";
 
 export type LoopStage = "sync" | "intake" | "work" | "judge";
@@ -80,22 +86,6 @@ export async function renderLoopPlanTasks(
     "Native deterministic item identity required",
   );
   return tasks;
-}
-
-function taskText(origin: string): string {
-  const offset = origin.indexOf("\n\n<environment>\n");
-  if (offset < 0) {
-    workloadCheck(!/<\/?environment>/.test(origin), "Malformed native environment suffix");
-    return origin;
-  }
-  const suffix = origin.slice(offset + "\n\n<environment>\n".length);
-  workloadCheck(
-    suffix.endsWith("\n</environment>") &&
-      suffix.slice(0, -"\n</environment>".length).trim().length > 0 &&
-      !/<\/?environment>/.test(suffix.slice(0, -"\n</environment>".length)),
-    "One complete native environment suffix required",
-  );
-  return origin.slice(0, offset);
 }
 
 export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape[], fixtureId: string) {
@@ -192,7 +182,7 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
         const looksLikeLoop = /^(?:\[Loop |Inbox sync v|Source restriction:)/.test(turn.origin);
         if (!looksLikeLoop) return null;
         workloadCheck(!failed, "Loop plan poisoned by an unsuccessful request");
-        const selected = tasks.get(taskText(turn.origin));
+        const selected = tasks.get(nativeTaskText(turn.origin));
         workloadCheck(selected, "Unknown or changed native loop task");
         const { index, stage } = selected;
         const plan = plans[index]!,

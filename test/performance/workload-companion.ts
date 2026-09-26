@@ -16,6 +16,7 @@ import type { WorkloadFixture } from "./workload.ts";
 import { materializeReply, validateMaterializeShape, type MaterializeShape } from "./workload-materialize.ts";
 import { nativeReply, validateNativeShapes, type NativeShape } from "./workload-native.ts";
 import { createLoopResponder, type LoopPlan } from "./workload-loop.ts";
+import { createCronResponder, type CronPlan } from "./workload-cron.ts";
 
 interface ResponsePacing {
   delayMs: number;
@@ -34,6 +35,7 @@ export interface CompanionProfile {
   materialize?: MaterializeShape;
   nativeShapes?: NativeShape[];
   loopPlans?: LoopPlan[];
+  cronPlans?: CronPlan[];
 }
 
 export function promptSha256(text: string): string {
@@ -233,6 +235,9 @@ export async function createWorkloadCompanion(
   const loops = profile.loopPlans
     ? await createLoopResponder(profile.loopPlans, profile.nativeShapes ?? [], fixture.fixtureId)
     : undefined;
+  const crons = profile.cronPlans
+    ? await createCronResponder(profile.cronPlans, profile.nativeShapes ?? [], fixture.fixtureId)
+    : undefined;
   let resolveProviderIdle: (() => void) | undefined;
   let resolveCompanionIdle: (() => void) | undefined;
   let closing: Promise<void> | undefined;
@@ -269,6 +274,7 @@ export async function createWorkloadCompanion(
           totals: provider.totals,
           companionTotals: totals,
           ...(loops ? { loopPlan: loops.snapshot() } : {}),
+          ...(crons ? { cronPlan: crons.snapshot() } : {}),
           qualified: false,
         }),
       );
@@ -307,6 +313,7 @@ export async function createWorkloadCompanion(
     let streaming = false;
     let native: Record<string, unknown> | undefined;
     let loopCall: ReturnType<NonNullable<typeof loops>["begin"]> = null;
+    let cronCall: ReturnType<NonNullable<typeof crons>["begin"]> = null;
     let responseComplete = false;
     totals.active++;
     totals.maxActive = Math.max(totals.maxActive, totals.active);
@@ -329,8 +336,10 @@ export async function createWorkloadCompanion(
       workloadCheck(body && typeof body === "object" && !Array.isArray(body), "Request object required");
       systemSha256 = promptSha256(body.system === undefined ? "" : textContent(body.system, true));
       loopCall = loops?.begin(body) ?? null;
-      const reply = loopCall ? { ...loopCall.reply, systemSha256 } : companionReply(body, profile);
-      const completion = loopCall
+      cronCall = crons?.begin(body) ?? null;
+      const admitted = loopCall ?? cronCall;
+      const reply = admitted ? { ...admitted.reply, systemSha256 } : companionReply(body, profile);
+      const completion = admitted
         ? new Promise<boolean>((resolve) => {
             res.once("finish", () => resolve(true));
             res.once("close", () => resolve(false));
@@ -438,7 +447,7 @@ export async function createWorkloadCompanion(
       res.end();
       if (completion) {
         responseComplete = await completion;
-        workloadCheck(responseComplete, "Native loop response did not finish");
+        workloadCheck(responseComplete, "Native scheduled response did not finish");
       }
     } catch (caught) {
       totals.errors++;
@@ -447,6 +456,7 @@ export async function createWorkloadCompanion(
       res.end(JSON.stringify({ error: { type: "invalid_request_error", message: error } }));
     } finally {
       loopCall?.finish(responseComplete && error === null);
+      cronCall?.finish(responseComplete && error === null);
       totals.active--;
       totals.requestBytes += requestBytes;
       totals.responseBytes += responseBytes;
@@ -464,6 +474,7 @@ export async function createWorkloadCompanion(
         streaming,
         ...(native ? { native } : {}),
         ...(loopCall ? { loop: { ...loopCall.reply.loop, responseComplete } } : {}),
+        ...(cronCall ? { cron: { ...cronCall.reply.cron, responseComplete } } : {}),
         startedAt,
         finishedAt: Date.now(),
         firstDeltaAt,
@@ -482,6 +493,7 @@ export async function createWorkloadCompanion(
     provider,
     profileSha256,
     loops,
+    crons,
     close: () =>
       (closing ??= (async () => {
         await Promise.all([stop(server), stop(provider.server)]);
