@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
@@ -295,6 +295,7 @@ export async function createWorkloadCompanion(
     let rule: string | null = null;
     let systemSha256: string | null = null;
     let requestSha256: string | null = null;
+    let responseId: string | null = null;
     let error: string | null = null;
     let streaming = false;
     let native: Record<string, unknown> | undefined;
@@ -366,8 +367,9 @@ export async function createWorkloadCompanion(
         ),
       };
       const stopReason = tools.length ? "tool_use" : "end_turn";
+      responseId = `msg_perf_${randomUUID()}`;
       const message = {
-        id: `msg_perf_${requestSha256.slice(0, 24)}`,
+        id: responseId,
         type: "message",
         role: "assistant",
         model: body.model,
@@ -437,6 +439,7 @@ export async function createWorkloadCompanion(
         rule,
         systemSha256,
         requestSha256,
+        responseId,
         streaming,
         ...(native ? { native } : {}),
         startedAt,

@@ -9,7 +9,13 @@ import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { environmentNote } from "../../src/core/attachments.ts";
-import { createPiHarness, oneShot, stableCwd, TITLE_GENERATION_PROMPT } from "../../src/harness/pi-harness.ts";
+import {
+  createPiHarness,
+  oneShot,
+  stableCwd,
+  stripImageBytes,
+  TITLE_GENERATION_PROMPT,
+} from "../../src/harness/pi-harness.ts";
 import { setProviderBaseUrls } from "../../src/model/provider-endpoints.ts";
 import { auxiliaryModelForProvider, resolveModel } from "../../src/model/pi-models.ts";
 import { companionReply, createWorkloadCompanion, promptSha256, type CompanionProfile } from "./workload-companion.ts";
@@ -101,6 +107,52 @@ function user(content: string) {
 function loopPrompt(stage: string, marker: string) {
   return `[Loop ${stage}]\nSynthetic fixture only\n[End loop ${stage}]\n${marker}`;
 }
+
+test("identical companion requests retain unique response receipts across helper restarts", async () => {
+  const records: Record<string, unknown>[] = [];
+  const responseIds: string[] = [];
+  const context = { messages: [user(loopPrompt("intake", `[qm-perf-loop:${fixture.fixtureId}:receipt]`))] };
+  for (let restart = 0; restart < 2; restart++) {
+    const companion = await createWorkloadCompanion(profile, provider, fixture, (record) => records.push(record), {
+      QM_PERF_TEST_TOKEN: token,
+    });
+    companion.server.listen(0, "127.0.0.1");
+    await once(companion.server, "listening");
+    const address = companion.server.address();
+    assert.ok(address && typeof address !== "string");
+    const model = {
+      ...resolveModel(modelId, false)!,
+      baseUrl: `http://127.0.0.1:${address.port}`,
+    } as Model<"anthropic-messages">;
+    try {
+      for (let call = 0; call < 2; call++) {
+        const exchange = stream(model, context, { apiKey: token, maxTokens: 256 });
+        const streamedIds = new Set<string>();
+        for await (const event of exchange) {
+          if ("partial" in event && event.partial.responseId) streamedIds.add(event.partial.responseId);
+        }
+        const response = await exchange.result();
+        assert.equal(response.stopReason, "stop", response.errorMessage);
+        assert.ok(response.responseId);
+        assert.deepEqual([...streamedIds], [response.responseId]);
+        responseIds.push(response.responseId);
+        const tapePayload = JSON.parse(JSON.stringify(stripImageBytes(response)));
+        assert.equal(tapePayload.responseId, response.responseId);
+      }
+    } finally {
+      await companion.close();
+    }
+  }
+  assert.equal(new Set(responseIds).size, 4);
+  const calls = records.filter((record) => record.type === "companion-call");
+  assert.equal(calls.length, 4);
+  assert.equal(new Set(calls.map((record) => record.requestSha256)).size, 1);
+  assert.deepEqual(
+    calls.map((record) => record.responseId),
+    responseIds,
+  );
+  assert.ok(calls.every((record) => record.error === null));
+});
 
 test("installed Pi streams, direct acknowledgment JSON, native loop stages and frozen turns share a fail-closed endpoint", async () => {
   const records: Record<string, unknown>[] = [];
