@@ -101,7 +101,7 @@ export async function createCronResponder(plans: CronPlan[], shapes: NativeShape
       );
       occurrences.add(occurrence.id);
       workloadCheck(
-        shapes.some((shape) => shape.name === occurrence.shape && shape.terminal === "reply"),
+        shapes.some((shape) => shape.name === occurrence.shape && shape.terminal === "reply" && !shape.recovery),
         "Declared native cron shape required",
       );
     }

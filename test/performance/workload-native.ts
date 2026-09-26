@@ -23,6 +23,7 @@ export interface NativeShape {
   chunkIntervalMs: number;
   terminal: "reply" | "loop-intake-empty";
   sessionTitle?: string;
+  recovery?: "empty-ending-once" | "overloaded-retry-once";
 }
 
 type Message = { role?: string; content?: unknown };
@@ -118,7 +119,15 @@ export function validateNativeShapes(shapes: NativeShape[]): void {
       "Native call budget exceeds bound",
     );
     workloadCheck(
-      shape.batches.length === shape.modelCalls - 1 &&
+      shape.recovery === undefined || ["empty-ending-once", "overloaded-retry-once"].includes(shape.recovery),
+      "Unknown native recovery mode",
+    );
+    workloadCheck(
+      !shape.recovery || (shape.terminal === "reply" && !shape.operations.some(childOperation)),
+      "Recovery requires a nondelegating loop reply",
+    );
+    workloadCheck(
+      shape.batches.length === shape.modelCalls - (shape.recovery ? 2 : 1) &&
         shape.batches.every((count) => Number.isSafeInteger(count) && count > 0 && count <= 100) &&
         shape.batches.reduce((sum, count) => sum + count, 0) === shape.toolCalls,
       "Every nonterminal native model call requires its exact nonempty tool batch",
@@ -207,6 +216,7 @@ export function validateNativeShapes(shapes: NativeShape[]): void {
           child !== shape &&
           !referenced.has(child.name) &&
           child.terminal === "reply" &&
+          !child.recovery &&
           !child.operations.some(childOperation) &&
           child.outputBytes <= 16000 &&
           child.outputBytes - Math.floor(child.outputBytes * child.repeatedFraction) >= 32,
@@ -457,6 +467,7 @@ export function nativeReply(body: Record<string, unknown>, fixtureId: string, sh
   workloadCheck(matches.length === 1 && matches[0]![1] === fixtureId, "One matching native fixture marker required");
   const shape = shapes?.find((candidate) => candidate.name === matches[0]![2]);
   workloadCheck(shape && body.model === shape.model && body.stream === true, "Admitted native model/shape required");
+  workloadCheck(!shape.recovery, "Recovery requires a finite loop plan");
   const nonce = matches[0]![3]!;
   if (shape.terminal === "loop-intake-empty") {
     workloadCheck(

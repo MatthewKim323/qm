@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { EMPTY_ENDING_NOTE } from "../../src/harness/pi-harness.ts";
 import { createCronStore } from "../../src/cron/cron-store.ts";
 import { createIdempotencyStore } from "../../src/idempotency/idempotency-store.ts";
 import { createLoopFireService } from "../../src/loops/loop-fire.ts";
@@ -31,9 +32,33 @@ export interface LoopPlan {
 }
 
 const summary = "Synthetic performance fixture item";
+const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const looksLikeLoop = (origin: string) => /^(?:\[Loop |Inbox sync v|Source restriction:)/.test(origin);
 
-function terminal(plan: LoopPlan, stage: LoopStage, item: boolean, sourceKey = plan.sourceKey): string {
-  if (stage === "sync") return "";
+function endingBodyHash(body: Record<string, unknown>): string {
+  const copy = structuredClone(body);
+  const messages = copy.messages as Array<{ content?: Array<Record<string, unknown>> }>;
+  const last = messages.at(-1)?.content;
+  if (Array.isArray(last) && last.at(-1)?.cache_control !== undefined) {
+    workloadCheck(
+      sha(last.at(-1)!.cache_control) === sha({ type: "ephemeral" }),
+      "Exact native cache boundary required",
+    );
+    delete last.at(-1)!.cache_control;
+  }
+  return sha(copy);
+}
+
+function endingNote(message: unknown): boolean {
+  return (
+    message !== undefined &&
+    sha(message) ===
+      sha({ role: "user", content: [{ type: "text", text: EMPTY_ENDING_NOTE, cache_control: { type: "ephemeral" } }] })
+  );
+}
+
+function terminal(plan: LoopPlan, stage: LoopStage, item: boolean, sourceKey = plan.sourceKey): string | undefined {
+  if (stage === "sync") return undefined;
   if (stage === "intake") return JSON.stringify({ items: item ? [{ sourceKey, sourceSummary: summary }] : [] });
   if (stage === "work")
     return JSON.stringify({
@@ -94,7 +119,14 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
   const instanceId = randomUUID();
   const ids = new Set<string>();
   const tasks = new Map<string, { index: number; stage: LoopStage; sourceKey?: string }>();
-  const states = [] as Array<{ occurrence: number; stage: number; step: number; active: boolean; origin?: string }>;
+  const states = [] as Array<{
+    occurrence: number;
+    stage: number;
+    step: number;
+    active: boolean;
+    origin?: string;
+    recoveryHash?: string;
+  }>;
   let failed = false;
   for (const [index, plan] of plans.entries()) {
     const loop = plan.definition;
@@ -175,12 +207,24 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
     states.push({ occurrence: 0, stage: 0, step: 0, active: false });
   }
   return {
-    begin(body: Record<string, unknown>) {
+    begin(body: Record<string, unknown>, requestSha256 = sha(body)) {
       try {
-        const turn = nativeTurn(body);
-        if (!turn) return null;
-        const looksLikeLoop = /^(?:\[Loop |Inbox sync v|Source restriction:)/.test(turn.origin);
-        if (!looksLikeLoop) return null;
+        let turnBody = body;
+        let turn = nativeTurn(body);
+        let note: unknown;
+        if ((!turn || !looksLikeLoop(turn.origin)) && Array.isArray(body.messages) && body.messages.length > 1) {
+          turnBody = { ...body, messages: body.messages.slice(0, -1) };
+          const prior = nativeTurn(turnBody);
+          if (prior && prior.origin.includes(EMPTY_ENDING_NOTE)) {
+            const preceding = nativeTurn({ ...body, messages: body.messages.slice(0, -2) });
+            workloadCheck(!preceding || !looksLikeLoop(preceding.origin), "Duplicate native ending note");
+          }
+          if (prior && looksLikeLoop(prior.origin)) {
+            turn = prior;
+            note = body.messages.at(-1);
+          }
+        }
+        if (!turn || !looksLikeLoop(turn.origin)) return null;
         workloadCheck(!failed, "Loop plan poisoned by an unsuccessful request");
         const selected = tasks.get(nativeTaskText(turn.origin));
         workloadCheck(selected, "Unknown or changed native loop task");
@@ -198,17 +242,53 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
           selected.sourceKey === undefined || selected.sourceKey === sourceKey,
           "Unexpected native item key",
         );
-        workloadCheck(turn.pairs.length === state.step, "Duplicate or skipped native continuation");
+        const shape = shapes.find((candidate) => candidate.name === expected.shape)!;
+        const retry = shape.recovery === "overloaded-retry-once";
+        const empty = shape.recovery === "empty-ending-once";
+        const recoveryOffset = (retry && state.step > 0) || (empty && state.step === shape.modelCalls - 1) ? 1 : 0;
+        workloadCheck(
+          state.step < shape.modelCalls && turn.pairs.length === state.step - recoveryOffset,
+          "Duplicate or skipped native continuation",
+        );
+        if (empty && state.step === shape.modelCalls - 1)
+          workloadCheck(
+            endingNote(note) && endingBodyHash(turnBody) === state.recoveryHash,
+            "Exact native empty-ending continuation required",
+          );
+        else workloadCheck(note === undefined, "Unexpected native ending note");
+        if (retry && state.step === 1)
+          workloadCheck(requestSha256 === state.recoveryHash, "Exact planned retry request bytes required");
         workloadCheck(
           state.origin === undefined || state.origin === turn.origin,
           "Native originating task changed within stage",
         );
-        const shape = shapes.find((candidate) => candidate.name === expected.shape)!;
         const nonce = `${instanceId}.${index}.${state.occurrence}.${state.stage}`;
-        const reply = nativeShapeReply(body, turn, shape, nonce, terminal(plan, stage, occurrence.item, sourceKey), {
-          fixtureId,
-          shapes,
-        });
+        const reply = nativeShapeReply(
+          turnBody,
+          turn,
+          shape,
+          nonce,
+          terminal(plan, stage, occurrence.item, sourceKey),
+          {
+            fixtureId,
+            shapes,
+          },
+        );
+        let outcome: "reply" | "empty-ending" | "overloaded-error" = "reply";
+        if (retry && state.step === 0) outcome = "overloaded-error";
+        if (empty && state.step === shape.modelCalls - 2) outcome = "empty-ending";
+        if (outcome !== "reply") {
+          reply.text = "";
+          reply.tools = [];
+          reply.native.toolCalls = 0;
+          reply.native.terminal = false;
+        }
+        let recoveryHash = state.recoveryHash;
+        if (outcome === "overloaded-error") recoveryHash = requestSha256;
+        if (outcome === "empty-ending") recoveryHash = endingBodyHash(body);
+        const native = shape.recovery
+          ? { ...reply.native, step: state.step, toolStep: turn.pairs.length, recovery: shape.recovery, outcome }
+          : reply.native;
         state.active = true;
         state.origin = turn.origin;
         const loop = {
@@ -222,7 +302,13 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
         };
         let finished = false;
         return {
-          reply: { ...reply, loop },
+          reply: {
+            ...reply,
+            rule: `native:${shape.name}:${state.step}`,
+            native,
+            loop,
+            plannedError: outcome === "overloaded-error",
+          },
           finish(success: boolean) {
             if (finished) return;
             finished = true;
@@ -231,10 +317,12 @@ export async function createLoopResponder(plans: LoopPlan[], shapes: NativeShape
               failed = true;
               return;
             }
+            state.recoveryHash = recoveryHash;
             state.step++;
             if (reply.native.terminal) {
               state.step = 0;
               state.origin = undefined;
+              state.recoveryHash = undefined;
               state.stage++;
               if (state.stage === occurrence.stages.length) {
                 state.stage = 0;

@@ -200,6 +200,14 @@ function validateCompanion(
   }
   if (profile.materialize) validateMaterializeShape(profile.materialize);
   if (profile.nativeShapes) validateNativeShapes(profile.nativeShapes);
+  for (const shape of profile.nativeShapes ?? [])
+    workloadCheck(
+      !shape.recovery ||
+        profile.loopPlans?.some((plan) =>
+          plan.occurrences.some((occurrence) => occurrence.stages.some((stage) => stage.shape === shape.name)),
+        ),
+      "Recovery requires a declared finite loop stage",
+    );
   workloadCheck(!profile.loopPlans || !profile.loop, "Finite and legacy loop admission cannot overlap");
   if (profile.loop) workloadCheck(/^[a-zA-Z0-9_-]+$/.test(profile.loop.shipAction), "Safe loop ship action required");
   for (const rule of [...profile.utilities, ...(profile.loop ? [profile.loop] : [])]) {
@@ -335,7 +343,7 @@ export async function createWorkloadCompanion(
       }
       workloadCheck(body && typeof body === "object" && !Array.isArray(body), "Request object required");
       systemSha256 = promptSha256(body.system === undefined ? "" : textContent(body.system, true));
-      loopCall = loops?.begin(body) ?? null;
+      loopCall = loops?.begin(body, requestSha256) ?? null;
       cronCall = crons?.begin(body) ?? null;
       const admitted = loopCall ?? cronCall;
       const reply = admitted ? { ...admitted.reply, systemSha256 } : companionReply(body, profile);
@@ -421,29 +429,38 @@ export async function createWorkloadCompanion(
       send("message_start", {
         message: { ...message, content: [], stop_reason: null, usage: { ...usage, output_tokens: 0 } },
       });
-      for (const [index, block] of content.entries()) {
-        const tool = block.type === "tool_use";
-        send("content_block_start", {
-          index,
-          content_block: tool ? { ...block, input: {} } : { type: "text", text: "" },
-        });
-        const characters = [...(tool ? JSON.stringify(block.input) : block.text)];
-        for (let offset = 0; offset < characters.length; offset += reply.pacing.chunkCharacters) {
-          if (offset) await sleep(reply.pacing.chunkIntervalMs, undefined, { signal: abort.signal });
-          firstDeltaAt ??= Date.now();
-          const chunk = characters.slice(offset, offset + reply.pacing.chunkCharacters).join("");
-          send("content_block_delta", {
+      if ("plannedError" in reply && reply.plannedError) {
+        const plannedError = {
+          type: "error",
+          error: { type: "overloaded_error", message: "Synthetic overloaded response for native retry check" },
+        };
+        native!.plannedErrorSha256 = promptSha256(JSON.stringify(plannedError));
+        send("error", { error: plannedError.error });
+      } else {
+        for (const [index, block] of content.entries()) {
+          const tool = block.type === "tool_use";
+          send("content_block_start", {
             index,
-            delta: tool ? { type: "input_json_delta", partial_json: chunk } : { type: "text_delta", text: chunk },
+            content_block: tool ? { ...block, input: {} } : { type: "text", text: "" },
           });
+          const characters = [...(tool ? JSON.stringify(block.input) : block.text)];
+          for (let offset = 0; offset < characters.length; offset += reply.pacing.chunkCharacters) {
+            if (offset) await sleep(reply.pacing.chunkIntervalMs, undefined, { signal: abort.signal });
+            firstDeltaAt ??= Date.now();
+            const chunk = characters.slice(offset, offset + reply.pacing.chunkCharacters).join("");
+            send("content_block_delta", {
+              index,
+              delta: tool ? { type: "input_json_delta", partial_json: chunk } : { type: "text_delta", text: chunk },
+            });
+          }
+          send("content_block_stop", { index });
         }
-        send("content_block_stop", { index });
+        send("message_delta", {
+          delta: { stop_reason: stopReason, stop_sequence: null },
+          usage: { output_tokens: usage.output_tokens },
+        });
+        send("message_stop", {});
       }
-      send("message_delta", {
-        delta: { stop_reason: stopReason, stop_sequence: null },
-        usage: { output_tokens: usage.output_tokens },
-      });
-      send("message_stop", {});
       res.end();
       if (completion) {
         responseComplete = await completion;

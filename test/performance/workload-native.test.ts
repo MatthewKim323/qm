@@ -257,3 +257,23 @@ test("native continuation rejects missing, changed and failed results and termin
   assert.equal(answer.tools.length, 0);
   assert.equal(answer.native.terminal, true);
 });
+
+test("recovery budgets are explicit and cannot authorize direct native turns", () => {
+  const recovered = { ...shape, modelCalls: shape.modelCalls + 1, recovery: "empty-ending-once" as const };
+  validateNativeShapes([recovered]);
+  assert.throws(() => validateNativeShapes([{ ...recovered, modelCalls: shape.modelCalls }]), /tool batch/);
+  assert.throws(() => validateNativeShapes([{ ...recovered, recovery: "unknown" as never }]), /recovery mode/);
+  assert.throws(
+    () =>
+      nativeReply(
+        {
+          model: modelId,
+          stream: true,
+          messages: [{ role: "user", content: nativeMarker(fixture.fixtureId, shape.name, "proof") }],
+        },
+        fixture.fixtureId,
+        [recovered],
+      ),
+    /finite loop plan/,
+  );
+});

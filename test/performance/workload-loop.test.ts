@@ -5,6 +5,11 @@ import test from "node:test";
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { createPiHarness, EMPTY_ENDING_NOTE } from "../../src/harness/pi-harness.ts";
+import { createMemorySessionStore } from "../../src/sessions/memory-session-store.ts";
+import type { ToolContext } from "../../src/tools/primitives.ts";
+import { isPollSurface } from "../../src/triggers/run-trigger.ts";
+import { setProviderBaseUrls } from "../../src/model/provider-endpoints.ts";
 import { environmentNote } from "../../src/core/attachments.ts";
 import { createCronStore } from "../../src/cron/cron-store.ts";
 import { createIdempotencyStore } from "../../src/idempotency/idempotency-store.ts";
@@ -350,47 +355,242 @@ test("finite loop admission rejects retries, malformed tasks, budgets and failed
 });
 
 test("aborted accepted HTTP response poisons the plan before another occurrence can start", async () => {
+  for (const recovery of [undefined, "empty-ending-once", "overloaded-retry-once"] as const) {
+    const native = await setup(async () => {
+      throw new Error("Unused");
+    });
+    const plan = native.plans[1]!;
+    const records: Record<string, any>[] = [];
+    const delayed = {
+      ...shape,
+      modelCalls: recovery ? shape.modelCalls + 1 : shape.modelCalls,
+      recovery,
+      delayMs: 1000,
+    };
+    const companion = await createWorkloadCompanion(
+      { ...provider, utilities: [], nativeShapes: [delayed], loopPlans: [plan] },
+      provider,
+      fixture,
+      (row) => records.push(row),
+      { QM_PERF_TEST_TOKEN: token },
+    );
+    companion.server.listen(0, "127.0.0.1");
+    await once(companion.server, "listening");
+    const address = companion.server.address();
+    assert.ok(address && typeof address !== "string");
+    const request = body((await renderLoopPlanTasks(plan)).sync!);
+    const abort = new AbortController();
+    const response = fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
+      method: "POST",
+      headers: { "x-api-key": token, "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: abort.signal,
+    });
+    try {
+      const deadline = Date.now() + 2000;
+      while (!companion.loops!.snapshot().states[0]!.active && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(companion.loops!.snapshot().states[0]!.active, true);
+      abort.abort();
+      await assert.rejects(response);
+      await companion.close();
+      assert.equal(companion.loops!.snapshot().failed, true);
+      assert.equal(companion.loops!.snapshot().complete, false);
+      assert.equal(records.length, 1);
+      assert.equal(records[0]!.loop.responseComplete, false);
+      assert.ok(records[0]!.error);
+    } finally {
+      abort.abort();
+      await response.catch(() => {});
+      await companion.close();
+    }
+  }
+});
+
+test("native Pi sync uses its terminal byte budget and exact optional recovery without extra calls", async () => {
+  let dispatch: (request: TurnRequest) => Promise<TurnResult>;
+  const native = await setup((request) => dispatch(request));
+  for (const recovery of [undefined, "empty-ending-once", "overloaded-retry-once"] as const) {
+    const plan = structuredClone(native.plans[1]!);
+    plan.occurrences = plan.occurrences.slice(0, 1);
+    const variant = { ...shape, modelCalls: recovery ? 3 : 2, recovery };
+    const receipts: Record<string, any>[] = [];
+    const companion = await createWorkloadCompanion(
+      { ...provider, utilities: [], nativeShapes: [variant], loopPlans: [plan] },
+      provider,
+      fixture,
+      (row) => receipts.push(row),
+      { QM_PERF_TEST_TOKEN: token },
+    );
+    companion.server.listen(0, "127.0.0.1");
+    await once(companion.server, "listening");
+    const address = companion.server.address();
+    assert.ok(address && typeof address !== "string");
+    setProviderBaseUrls({ anthropic: `http://127.0.0.1:${address.port}` });
+    const harness = createPiHarness({ defaultModelId: shape.model, apiKey: token });
+    const store = createMemorySessionStore();
+    const session = await store.getOrCreateByThread(
+      `native-recovery-${recovery ?? "default"}`,
+      "dm",
+      scopeId("personal", "fixture-actor"),
+    );
+    const { lease } = await store.acquireLease(session.id);
+    assert.ok(lease);
+    const llm: unknown[] = [];
+    let reads = 0;
+    try {
+      let result: Awaited<ReturnType<typeof harness.turns.runTurn>> | undefined;
+      dispatch = async (request) => {
+        assert.equal(request.surface, "loop");
+        result = await harness.turns.runTurn({
+          session,
+          input: request.text!,
+          systemPrompt: "Synthetic loop fixture",
+          history: [],
+          tools: {
+            read: async (path: string) => {
+              assert.equal(path, "shared/loop.txt");
+              reads++;
+              return { content: text, sourceScopeId: session.scopeId };
+            },
+          } as ToolContext,
+          scopeLabel: session.scopeId,
+          orgScopeId: scopeId("org", "fixture"),
+          runId: `test-${recovery ?? "default"}`,
+          pollFire: isPollSurface(request.surface),
+          turnWallClockMs: 60000,
+          emit: (entry) => store.append(lease, entry),
+          tape: async (record) => {
+            await store.appendTape(lease, record);
+          },
+          recordModelCall: () => {},
+          recordLlmRequest: async (record) => {
+            llm.push(record);
+          },
+        });
+        return { status: "ok", reply: result.reply, sessionId: session.id };
+      };
+      const fired = await native.fire.fire(plan.definition.id, `native-recovery-${recovery ?? "default"}`);
+      assert.equal(fired.status, "silent", fired.note);
+      assert.ok(result);
+      assert.equal((await native.items.byLoop(plan.definition.id)).length, 0);
+      assert.equal(result.modelCalls, variant.modelCalls);
+      assert.equal(reads, variant.toolCalls);
+      assert.equal(llm.length, variant.modelCalls);
+      assert.equal(Buffer.byteLength(result.reply), variant.outputBytes);
+      await companion.close();
+      assert.equal(companion.loops!.snapshot().complete, true);
+      assert.equal(companion.totals.errors, 0);
+      assert.equal(companion.totals.forwarded, 0);
+      const calls = receipts.filter((row) => row.type === "companion-call");
+      assert.equal(calls.length, variant.modelCalls);
+      assert.ok(calls.every((row) => row.error === null && row.loop.responseComplete));
+      assert.deepEqual(
+        calls.map((row) => row.native.step),
+        Array.from({ length: variant.modelCalls }, (_, index) => index),
+      );
+      assert.equal(
+        calls.reduce((count, row) => count + row.native.toolCalls, 0),
+        1,
+      );
+      assert.equal(calls.filter((row) => row.native.terminal).length, 1);
+      const tape = await store.getTape(session.id);
+      const messages = tape
+        .filter((row) => row.kind === "message")
+        .map((row) => row.payload as { role: string; responseId?: string; stopReason?: string });
+      const assistants = messages.filter((message) => message.role === "assistant");
+      assert.deepEqual(
+        assistants.map((message) => message.responseId),
+        calls.map((row) => row.responseId),
+      );
+      const notes = messages.filter(
+        (message) => message.role === "user" && JSON.stringify(message).includes(EMPTY_ENDING_NOTE),
+      );
+      assert.equal(notes.length, recovery === "empty-ending-once" ? 1 : 0);
+      assert.equal(
+        assistants.filter((message) => message.stopReason === "error").length,
+        recovery === "overloaded-retry-once" ? 1 : 0,
+      );
+      if (recovery === "overloaded-retry-once") {
+        assert.equal(calls[0]!.requestSha256, calls[1]!.requestSha256);
+        assert.equal(calls[0]!.native.outcome, "overloaded-error");
+        assert.equal(
+          calls[0]!.native.plannedErrorSha256,
+          createHash("sha256")
+            .update(
+              JSON.stringify({
+                type: "error",
+                error: { type: "overloaded_error", message: "Synthetic overloaded response for native retry check" },
+              }),
+            )
+            .digest("hex"),
+        );
+      }
+    } finally {
+      await harness.turns.close?.();
+      await store.releaseLease(lease);
+      await companion.close();
+      setProviderBaseUrls({});
+    }
+  }
+});
+
+test("planned loop recovery rejects changed, duplicated, skipped and unfinished continuations", async () => {
   const native = await setup(async () => {
     throw new Error("Unused");
   });
-  const plan = native.plans[1]!;
-  const records: Record<string, any>[] = [];
-  const delayed = { ...shape, delayMs: 1000 };
-  const companion = await createWorkloadCompanion(
-    { ...provider, utilities: [], nativeShapes: [delayed], loopPlans: [plan] },
-    provider,
-    fixture,
-    (row) => records.push(row),
-    { QM_PERF_TEST_TOKEN: token },
-  );
-  companion.server.listen(0, "127.0.0.1");
-  await once(companion.server, "listening");
-  const address = companion.server.address();
-  assert.ok(address && typeof address !== "string");
+  const plan = structuredClone(native.plans[1]!);
+  plan.occurrences = plan.occurrences.slice(0, 1);
   const request = body((await renderLoopPlanTasks(plan)).sync!);
-  const abort = new AbortController();
-  const response = fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
-    method: "POST",
-    headers: { "x-api-key": token, "content-type": "application/json" },
-    body: JSON.stringify(request),
-    signal: abort.signal,
-  });
-  try {
-    const deadline = Date.now() + 2000;
-    while (!companion.loops!.snapshot().states[0]!.active && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(companion.loops!.snapshot().states[0]!.active, true);
-    abort.abort();
-    await assert.rejects(response);
-    await companion.close();
-    assert.equal(companion.loops!.snapshot().failed, true);
-    assert.equal(companion.loops!.snapshot().complete, false);
-    assert.equal(records.length, 1);
-    assert.equal(records[0]!.loop.responseComplete, false);
-    assert.ok(records[0]!.error);
-  } finally {
-    abort.abort();
-    await response.catch(() => {});
-    await companion.close();
+  for (const recovery of ["empty-ending-once", "overloaded-retry-once"] as const) {
+    const variant = { ...shape, modelCalls: 3, recovery };
+    const failed = await createLoopResponder([plan], [variant], fixture.fixtureId);
+    failed.begin(request)!.finish(false);
+    assert.throws(() => failed.begin(request), /poisoned/);
+    const active = await createLoopResponder([plan], [variant], fixture.fixtureId);
+    active.begin(request)!;
+    assert.throws(() => active.begin(request), /concurrent/);
+    const responder = await createLoopResponder([plan], [variant], fixture.fixtureId);
+    const first = responder.begin(request)!;
+    assert.equal(first.reply.native.terminal, false);
+    first.finish(true);
+    assert.equal(responder.snapshot().states[0]!.occurrence, 0);
+    assert.equal(responder.snapshot().complete, false);
+    if (recovery === "overloaded-retry-once") {
+      assert.throws(() => responder.begin({ ...request, max_tokens: 321 }), /retry request bytes/);
+      const duplicate = await createLoopResponder([plan], [variant], fixture.fixtureId);
+      duplicate.begin(request)!.finish(true);
+      duplicate.begin(request)!.finish(true);
+      assert.throws(() => duplicate.begin(request), /Duplicate or skipped/);
+    } else {
+      const afterTool = continuation(request, first.reply);
+      responder.begin(afterTool)!.finish(true);
+      assert.equal(responder.snapshot().states[0]!.occurrence, 0);
+      assert.throws(() => responder.begin(afterTool), /empty-ending/);
+      for (const change of ["note", "system", "duplicate"] as const) {
+        const rejected = await createLoopResponder([plan], [variant], fixture.fixtureId);
+        const call = rejected.begin(request)!;
+        call.finish(true);
+        const ready = continuation(request, call.reply);
+        rejected.begin(ready)!.finish(true);
+        const note = {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: change === "note" ? EMPTY_ENDING_NOTE + " changed" : EMPTY_ENDING_NOTE,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        };
+        const next = {
+          ...ready,
+          ...(change === "system" ? { system: "changed" } : {}),
+          messages: [...ready.messages, note, ...(change === "duplicate" ? [note] : [])],
+        };
+        assert.throws(() => rejected.begin(next), /empty-ending|Duplicate|ending note/);
+        assert.equal(rejected.snapshot().failed, true);
+      }
+    }
   }
 });

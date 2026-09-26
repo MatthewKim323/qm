@@ -272,6 +272,14 @@ test("two actual scheduled cron fires use distinct finite shapes and exact stabl
 test("cron admission fails closed on task changes, duplicate continuations, concurrent requests and exhaustion", async () => {
   const { plan } = await setup();
   const task = await renderCronPlanTask(plan);
+  await assert.rejects(
+    createCronResponder(
+      [plan],
+      [{ ...shape, modelCalls: shape.modelCalls + 1, recovery: "overloaded-retry-once" }, second],
+      fixture.fixtureId,
+    ),
+    /cron shape/,
+  );
   for (const transform of [
     (value: string) => value.replace("Bound earlier fixture note", "Changed note"),
     (value: string) => value.replace("Fixture Actor", "Someone else"),
