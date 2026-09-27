@@ -208,6 +208,11 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
           type: event.type,
           scopeId: f.ownerScopeId,
           ...(typeof anchor === "number" ? { anchorTrackId: anchor } : {}),
+          people: (event.people ?? [])
+            .map((p) => (isObj(p) && typeof p.id === "string" ? p.id : typeof p === "string" ? p : ""))
+            .filter(Boolean),
+          project: event.project ?? null,
+          ...(str(event.payload.feature) ? { feature: str(event.payload.feature)! } : {}),
         })
         .catch((e: unknown) => reportFailure("worldhooks: track", e, f.fireKey));
     }

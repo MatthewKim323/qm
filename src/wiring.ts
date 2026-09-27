@@ -2519,6 +2519,7 @@ export function buildApp(
                 memory: baseMemory,
                 store: artifactMap<WorldRunReport>("world_runs"),
                 ...(config.worldHudUrl ? { hudUrl: config.worldHudUrl } : {}),
+                ...(config.worldProceduresUrl ? { proceduresUrl: config.worldProceduresUrl } : {}),
               }),
             }
           : {}),

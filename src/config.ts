@@ -54,6 +54,8 @@ export interface Config {
   worldHooks?: WorldHooksConfig;
   /** WORLD service HUD endpoint that receives WorldHook swarm activity (WORLD_HUD_URL). */
   worldHudUrl?: string;
+  /** WORLD service Memorable -> GBrain bridge (WORLD_PROCEDURES_URL, default <WORLD_HUD_URL origin>/procedures). */
+  worldProceduresUrl?: string;
   production: boolean;
   allowUnauthenticatedCore: boolean;
   port: number;
@@ -1543,6 +1545,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     swarmDefaults,
     ...(worldHooks ? { worldHooks } : {}),
     ...(worldHooks && env.WORLD_HUD_URL?.trim() ? { worldHudUrl: env.WORLD_HUD_URL.trim() } : {}),
+    ...(worldHooks && (env.WORLD_PROCEDURES_URL?.trim() || env.WORLD_HUD_URL?.trim())
+      ? {
+          worldProceduresUrl:
+            env.WORLD_PROCEDURES_URL?.trim() || new URL("/procedures", env.WORLD_HUD_URL!.trim()).toString(),
+        }
+      : {}),
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
     backgroundJobTtlMs:

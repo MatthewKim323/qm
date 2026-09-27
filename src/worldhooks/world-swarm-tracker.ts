@@ -72,6 +72,8 @@ export interface WorldSwarmTrackerDeps {
   quietMs?: number;
   maxMs?: number;
   log?: (line: string) => void;
+  /** WORLD service Memorable -> GBrain bridge (POST <world>/procedures) for learned and recalled procedures. */
+  proceduresUrl?: string;
   /** Durable run reports, so the run 1 vs run 2 comparison survives a restart. */
   store?: DurableMap<WorldRunReport>;
 }
@@ -82,6 +84,9 @@ export interface TrackRequest {
   type: string;
   scopeId: ScopeId;
   anchorTrackId?: number;
+  people?: string[];
+  project?: string | null;
+  feature?: string;
 }
 
 interface SessionRow {
@@ -136,6 +141,58 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
       });
     } catch (e) {
       log(`[worldhooks] hud post failed: ${errMessage(e)}`);
+    }
+  }
+
+  function draftOf(json: Record<string, unknown>): Record<string, unknown> {
+    const payload = (json.payload ?? {}) as Record<string, unknown>;
+    const trigger = { ...((payload.trigger_signature ?? {}) as Record<string, unknown>) };
+    return {
+      title: json.title,
+      steps: payload.steps ?? [],
+      preconditions: payload.preconditions ?? [],
+      postconditions: payload.postconditions ?? [],
+      trigger_signature: trigger,
+      request_id: json.slug,
+    };
+  }
+
+  async function bridge(
+    kind: "learned" | "recalled",
+    json: Record<string, unknown>,
+    req: TrackRequest,
+    metrics?: WorldRunMetrics,
+  ): Promise<void> {
+    if (!deps.proceduresUrl) return;
+    const body = {
+      kind,
+      draft: draftOf(json),
+      origin: {
+        event_id: req.eventId,
+        people: req.people ?? [],
+        project: req.project ?? null,
+        harness: "qm-swarm",
+        feature: req.feature ?? req.type,
+        ...(metrics
+          ? {
+              metrics: {
+                tool_calls: metrics.toolCalls,
+                turns: metrics.turns,
+                seconds: Math.round(metrics.wallMs / 1000),
+              },
+            }
+          : {}),
+      },
+    };
+    try {
+      await fetchImpl(deps.proceduresUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (e) {
+      log(`[worldhooks] procedures bridge ${kind} failed: ${errMessage(e)}`);
     }
   }
 
@@ -206,10 +263,24 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
   async function track(req: TrackRequest): Promise<WorldRunReport | undefined> {
     const startedAt = Date.now();
     const recalled: Array<{ title: string; steps: number }> = [];
+    const bridged = new Set<string>();
     const onRecall = (e: RecallEvent) => {
       if (e.scopeId !== req.scopeId) return;
       const hit = parseRecallBlock(e.block);
       recalled.push(hit);
+      if (deps.proceduresUrl && !bridged.has(hit.title)) {
+        bridged.add(hit.title);
+        void deps
+          .q(
+            "select json from memorable_procedures where json->>'scope_id' = $1 and json->>'title' = $2 order by json->>'created_at' desc limit 1",
+            [req.scopeId, hit.title],
+          )
+          .then((rows) => {
+            const json = rows[0]?.json as Record<string, unknown> | undefined;
+            if (json) return bridge("recalled", json, req);
+          })
+          .catch((err: unknown) => log(`[worldhooks] recall lookup failed: ${errMessage(err)}`));
+      }
       if (recalled.length === 1)
         void hud({
           kind: "memory_event",
@@ -292,6 +363,14 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
           log(`[worldhooks] ${req.fireKey} capture ${s.name} failed: ${captureError}`);
         }
       }
+    }
+    if (captured > 0 && deps.proceduresUrl) {
+      const rows = await deps
+        .q("select json from memorable_procedures where json->>'session_id' = any($1::text[])", [
+          per.map(({ s }) => s.sessionId),
+        ])
+        .catch(() => [] as Rows);
+      for (const row of rows) await bridge("learned", row.json as Record<string, unknown>, req, total);
     }
     const report: WorldRunReport = {
       eventId: req.eventId,
