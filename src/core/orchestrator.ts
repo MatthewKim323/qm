@@ -1455,6 +1455,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         ownerAuthAvailable = true;
       }
       const connectorEnv: Record<string, string> = {};
+      // World-event turns and their swarm workers read the owner's WORLD service (GBrain proxy).
+      if (deps.worldSandboxEnv && /^(?:world|swarm):/.test(input.conversation.threadRef))
+        Object.assign(connectorEnv, deps.worldSandboxEnv);
       const credsStart = Date.now();
       const commandCredentials: CommandCredential[] = [];
       const credentialDescriptions: string[] = [];

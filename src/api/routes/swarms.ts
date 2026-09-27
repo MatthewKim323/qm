@@ -104,6 +104,9 @@ async function swarmRequest(ctx: ApiCtx): Promise<void> {
       return sendJson(res, 202, { members });
     }
     if (body.action === "send") {
+      // A single peer id is a one-member audience.
+      if (typeof body.audience === "string" && body.audience !== "all" && body.audience !== "parent")
+        body.audience = [body.audience];
       if (
         !(Array.isArray(body.audience) || body.audience === "all" || body.audience === "parent") ||
         (body.notify !== undefined && typeof body.notify !== "boolean") ||
