@@ -9449,7 +9449,7 @@ h3.ambient-field-label {
 }
 @media (max-width: 600px) {
   .inbox-chips {
-    gap: 20px;
+    gap: 12px;
   }
 }
 .inbox-sync-line {
