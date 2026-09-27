@@ -81,8 +81,8 @@ async function inbox(ctx: ApiCtx): Promise<void> {
   const handled = ctx.url.searchParams.get("view") === "handled";
   const sent = ctx.url.searchParams.get("view") === "sent";
   const filter = ctx.url.searchParams.get("loopId");
-  const attention = summaries.filter((item) => {
-    if (item.status === "shipped" || item.status === "skipped") return false;
+  const open = summaries.filter((item) => item.status !== "shipped" && item.status !== "skipped");
+  const attention = open.filter((item) => {
     if (inboxFilter === "all") return true;
     if (item.inboxPreview?.automated === true) return false;
     if (inboxFilter === "human") return true;
@@ -92,7 +92,7 @@ async function inbox(ctx: ApiCtx): Promise<void> {
     );
   });
   const counts = new Map<string, number>();
-  for (const item of attention) counts.set(item.loopId, (counts.get(item.loopId) ?? 0) + 1);
+  for (const item of open) counts.set(item.loopId, (counts.get(item.loopId) ?? 0) + 1);
   let candidates = attention;
   if (sent)
     candidates = summaries.filter(

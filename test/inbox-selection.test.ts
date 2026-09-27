@@ -416,7 +416,7 @@ test("the inbox feed reconciles selected owner Gmail loops before counting summa
   assert.deepEqual(refreshed, []);
 });
 
-test("inbox filters retain automated messages and resolved human conversations with matching counts", async () => {
+test("inbox filters change visible messages while source counts include all open conversations", async () => {
   const w = world();
   const [email, slack] = await ensureDefaultInboxLoops(w.deps.store, "alice");
   for (const [key, payload, draft] of [
@@ -453,7 +453,12 @@ test("inbox filters retain automated messages and resolved human conversations w
   const triaged = (await w.call()).data;
   assert.equal(triaged.filter, "triaged");
   assert.deepEqual(keys(triaged), ["question"]);
-  assert.equal(triaged.total, 1);
+  assert.equal(triaged.total, 5);
+  const sourceCounts = (feed: any) => feed.selected.map((loop: any) => [loop.id, loop.count]);
+  assert.deepEqual(sourceCounts(triaged), [
+    [email!.id, 4],
+    [slack!.id, 1],
+  ]);
   for (const [filter, expected] of [
     ["human", ["pending", "question", "thanks"]],
     ["all", ["bot", "pending", "question", "receipt", "thanks"]],
@@ -462,10 +467,11 @@ test("inbox filters retain automated messages and resolved human conversations w
     const feed = (await w.call()).data;
     assert.equal(feed.filter, filter);
     assert.deepEqual(keys(feed), expected);
-    assert.equal(feed.total, expected.length);
+    assert.equal(feed.total, 5);
+    assert.deepEqual(sourceCounts(feed), sourceCounts(triaged));
     assert.equal(
       feed.selected.reduce((sum: number, loop: any) => sum + loop.count, 0),
-      expected.length,
+      5,
     );
     assert.deepEqual(keys((await w.call("GET", null, "view=handled")).data), ["handled"]);
     assert.deepEqual(
@@ -480,6 +486,14 @@ test("inbox filters retain automated messages and resolved human conversations w
   assert.equal(receipt.proposal, undefined);
   await w.uiState.put(uiStateId("alice", "inbox-filter"), { value: "invalid", updatedAt: Date.now() });
   assert.equal((await w.call()).data.filter, "triaged");
+  const question = (await w.deps.items.byLoop(email!.id)).find((item) => item.sourceKey === "question")!;
+  await w.deps.items.recordAction(question.id, { kind: "dismiss", outcome: "dismissed" });
+  const afterDismiss = (await w.call()).data;
+  assert.equal(afterDismiss.total, 4);
+  assert.deepEqual(sourceCounts(afterDismiss), [
+    [email!.id, 3],
+    [slack!.id, 1],
+  ]);
 });
 
 test("inbox filters apply before pagination even when automated messages fill multiple pages", async () => {
@@ -496,7 +510,7 @@ test("inbox filters apply before pagination even when automated messages fill mu
     ]);
   }
   const triaged = (await w.call()).data;
-  assert.equal(triaged.total, 5);
+  assert.equal(triaged.total, 85);
   assert.equal(triaged.items.length, 5);
   assert.equal(triaged.nextCursor, null);
   await w.uiState.put(uiStateId("alice", "inbox-filter"), { value: "all", updatedAt: Date.now() });
@@ -524,6 +538,7 @@ test("explicit refresh filters stay consistent across saved preference changes w
   assert.equal(pinned.items.length, 2);
   const latest = (await w.call()).data;
   assert.equal(latest.filter, "human");
-  assert.equal(latest.total, 1);
+  assert.equal(latest.total, 2);
+  assert.equal(latest.items.length, 1);
   assert.equal((await w.call("GET", null, "filter=invalid")).status, 400);
 });

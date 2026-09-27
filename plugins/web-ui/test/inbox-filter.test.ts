@@ -94,10 +94,10 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
       else if (race) pageItems = items.slice(2);
       return Response.json({
         filter,
-        selected: [{ id: "email", name: "Email", count: items.length }],
+        selected: [{ id: "email", name: "Email", count: entries.length }],
         available: [],
         items: pageItems,
-        total: race === "mismatch" ? 999 : items.length,
+        total: race === "mismatch" ? 999 : entries.length,
         nextCursor: more ? "page-2" : null,
       });
     }
@@ -116,7 +116,14 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
       (element) => element.textContent?.trim() === label,
     )!;
   const titles = () => [...host.querySelectorAll(".inbox-item-sub")].map((item) => item.textContent?.trim());
+  const assertPillCounts = () => {
+    assert.deepEqual(
+      [...host.querySelectorAll(".inbox-chip-count")].map((badge) => badge.textContent?.trim()),
+      ["4", "4"],
+    );
+  };
   await settled();
+  assertPillCounts();
   assert.deepEqual(
     [...host.querySelectorAll(".inbox-filters button")].map((element) => element.textContent?.trim()),
     ["Loop triaged", "Only human", "All emails"],
@@ -125,9 +132,11 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   assert.deepEqual(titles(), ["Please review the launch plan"]);
   button("Only human").click();
   await settled();
+  assertPillCounts();
   assert.deepEqual(titles(), ["Please review the launch plan", "Thanks, all set", "Quick question"]);
   button("All emails").click();
   await settled();
+  assertPillCounts();
   assert.equal(titles().length, 4);
   assert.equal(button("All emails").getAttribute("aria-pressed"), "true");
   assert.deepEqual(writes, ["human", "all"]);
@@ -160,7 +169,7 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   race = undefined;
   await refreshInbox();
   assert.equal(inboxState.filter, "human");
-  assert.equal(inboxState.total, 3);
+  assert.equal(inboxState.total, 4);
   saved = "all";
   await refreshInbox();
   failSave = true;
