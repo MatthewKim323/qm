@@ -1,0 +1,16 @@
+{
+  "id": "evt_01J8ALEXCANVAS01",
+  "type": "customer_feedback.detected",
+  "ts": "2026-09-27T20:14:03Z",
+  "source": "manual",
+  "confidence": 0.93,
+  "people": [{ "id": "alex", "name": "Alex", "enrolled": true }],
+  "project": "syla",
+  "payload": {
+    "product": "Canvas",
+    "feature": "onboarding",
+    "sentiment": "neg",
+    "feedback": "Canvas setup was confusing, we'd roll it out if onboarding were easier",
+    "buying_signal": "would roll out if onboarding were easier"
+  }
+}
