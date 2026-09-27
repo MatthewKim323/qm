@@ -80,6 +80,7 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest
 SANDBOX_RESOURCES_ENABLED=true
 PUBLIC_API_URL=http://host.docker.internal:${PORT}
 WORLD_HOOKS_FILE=${root}/deploy/worldhooks/world-hooks.json
+WORLD_HUD_URL=${WORLD_HUD_URL:-http://localhost:8787/hud}
 WORLD_HOOKS_SECRET=${keep_secret:-world-$(openssl rand -hex 24)}
 MEMORY_PROVIDER_CONFIG=${mpc}
 MEMORABLE_BACKEND=qm
