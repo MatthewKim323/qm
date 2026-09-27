@@ -402,7 +402,9 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
       `[worldhooks] ${req.fireKey} complete turns=${total.turns} toolCalls=${total.toolCalls} toolErrors=${total.toolErrors} wall=${fmtS(total.wallMs)} recalled=${recalled.length} captured=${captured}`,
     );
     if (recalled.length && baseline) {
-      const better = report.total.toolCalls < baseline.total.toolCalls || report.total.wallMs < baseline.total.wallMs;
+      const better =
+        report.total.toolCalls <= baseline.total.toolCalls &&
+        (report.total.toolCalls < baseline.total.toolCalls || report.total.wallMs < baseline.total.wallMs);
       await hud({
         kind: "memory_event",
         text: better ? "LEARNED FROM RUN 1" : "RUN 2 VS RUN 1 (NO GAIN)",
