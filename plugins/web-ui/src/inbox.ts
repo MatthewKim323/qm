@@ -1210,7 +1210,6 @@ export function chatTpl(item: InboxItem, compact = false): TemplateResult {
   return html`
     <div class="inbox-chat">
       <div class="inbox-chat-log">
-        ${item.status === "open" && !usesOutputReview(item) && (!item.sentChat || item.draft) ? html`<div class="inbox-chat-msg agent">${draftMessageTpl(item)}</div>` : nothing}
         ${item.thread.map(
           (m) => html`<div class="inbox-chat-msg ${m.role}"><span class="inbox-chat-text">${m.text}</span></div>`,
         )}
@@ -1271,7 +1270,8 @@ export function chatTpl(item: InboxItem, compact = false): TemplateResult {
   `;
 }
 
-function draftMessageTpl(item: InboxItem): TemplateResult {
+export function draftMessageTpl(item: InboxItem): TemplateResult | typeof nothing {
+  if (item.status !== "open" || usesOutputReview(item) || (item.sentChat && !item.draft)) return nothing;
   const busy = chatting.has(item.id);
   const draft = effectiveDraft(item);
   const gmail = item.source === "gmail";
@@ -1490,7 +1490,7 @@ function itemRowTpl(surface: InboxSurface, item: InboxItem): TemplateResult {
                 usesOutputReview(item)
                   ? reviewTpl(item)
                   : html`${handled ? nothing : html`<div class="inbox-item-detail-actions">${dismissItemTpl(item)}</div>`}
-                    ${contextTpl(item)} ${handled ? handledNoteTpl(item) : chatTpl(item, true)}`
+                    ${contextTpl(item)} ${draftMessageTpl(item)} ${handled ? handledNoteTpl(item) : chatTpl(item, true)}`
               }
             </div>`
           : nothing
@@ -1818,7 +1818,7 @@ function itemPageTpl(item: InboxItem): TemplateResult {
   let detail: TemplateResult;
   if (!item.detailLoaded) detail = html`<div class="empty compact">Loading message…</div>`;
   else if (usesOutputReview(item)) detail = reviewTpl(item);
-  else detail = html`${contextTpl(item)} ${handled ? handledNoteTpl(item) : nothing}`;
+  else detail = html`${contextTpl(item)} ${draftMessageTpl(item)} ${handled ? handledNoteTpl(item) : nothing}`;
   return html`
     <div class="pane-head inbox-item-head src-${item.source}">
       <div class="inbox-item-head-copy">
@@ -1848,6 +1848,7 @@ function sentDraftTpl(): TemplateResult | undefined {
   const saved = selectedSentChat();
   if (!saved) return;
   const item = toInboxItem(saved);
+  if (item.status === "open" && item.draft) return html`${draftMessageTpl(item)}`;
   if (item.status !== "open")
     return html`<div class="inbox-draft">
       <p>Reply sent.</p>
