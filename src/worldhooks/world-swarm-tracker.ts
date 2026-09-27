@@ -87,6 +87,8 @@ export interface TrackRequest {
   people?: string[];
   project?: string | null;
   feature?: string;
+  /** Worker names from the route, shown as queued until the swarm exists. */
+  plannedWorkers?: string[];
 }
 
 interface SessionRow {
@@ -297,19 +299,32 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
         const all = await sessions(req.fireKey);
         if (!all.length) continue;
         const statuses = await Promise.all(all.map(async (s) => ({ s, run: await latestRun(s.threadRef) })));
-        const workers: WorkerStatus[] = await Promise.all(
+        const planned = req.plannedWorkers ?? [];
+        const live: WorkerStatus[] = await Promise.all(
           statuses
-            .filter(({ s }) => s.name !== "Root" || all.length === 1)
+            .filter(({ s }) => s.name !== "Root" || (all.length === 1 && !planned.length))
             .map(async ({ s, run }) => {
               const state = toState(run.status);
               const note = state === "running" ? await lastPurpose(s.sessionId) : undefined;
               return { name: s.name, state, ...(note ? { note } : {}) };
             }),
         );
+        const rootNote = await lastPurpose(all[0]!.sessionId);
+        const workers: WorkerStatus[] = [
+          ...live,
+          ...planned
+            .filter((name) => !live.some((w) => w.name === name))
+            .map((name) => ({ name, state: "running" as const, note: rootNote ? `queued · ${rootNote}` : "queued" })),
+        ].sort((a, b) => {
+          const ia = planned.indexOf(a.name);
+          const ib = planned.indexOf(b.name);
+          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        });
         const msg = {
           kind: "agent_activity",
           ...(req.anchorTrackId !== undefined ? { anchor_track_id: req.anchorTrackId } : {}),
           hook: req.type,
+          event_id: req.eventId,
           workers,
         };
         const key = JSON.stringify(msg);

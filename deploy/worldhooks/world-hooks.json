@@ -25,7 +25,7 @@
       }
     },
     "feature_request.detected": {
-      "action": "A customer asked for a feature in person. Resolve who is asking, spec the change, and dispatch the coding job to the owner's own WORLD builder service (host.docker.internal:8787 is the owner's internal service; dispatching a spec to it is pre-approved and sends nothing to the customer). Use the execute tool (shell) for all file work: keep every artifact under $HOME/world/<event id>/ and finish by running one verifying shell command that exits 0.",
+      "action": "A customer asked for a feature in person. Resolve who is asking, spec the change, and dispatch the coding job to the owner's own WORLD builder (host.docker.internal:8787 is the owner's internal service; it runs Claude Code on the owner's laptop against the owner's repo and opens a PR that is never merged; dispatching is pre-approved and sends nothing to the customer). Use the execute tool (shell) for all file work: keep every artifact under $HOME/world/<event id>/ and finish by running one verifying shell command that exits 0.",
       "swarm": {
         "workers": [
           {
@@ -41,7 +41,7 @@
           {
             "role": "builder",
             "name": "Builder",
-            "brief": "Dispatch the coding job to the owner's WORLD builder service. Wait for the Product worker's spec (swarm messages); if it has not arrived after two reads of GET /v1/swarm?read=1, write a minimal spec yourself from the event payload (title, summary, acceptance_criteria, files_likely_touched). Use the execute tool (shell) for all file work. 1) mkdir -p $HOME/world/<event id> and write dispatch.json there: {\"event_id\": <event id>, \"spec\": <the spec object>, \"repo\": <payload.repo if present, else the event project, else null>}. 2) POST it with: cd $HOME/world/<event id> && curl -sS -m 20 -o dispatch-response.json -w '%{http_code}' -H 'content-type: application/json' --data @dispatch.json http://host.docker.internal:8787/builder/dispatch > dispatch-status.txt || echo \"unreachable: curl exit $?\" > dispatch-status.txt. 3) Verify with: test -s $HOME/world/<event id>/dispatch.json && test -s $HOME/world/<event id>/dispatch-status.txt && echo DISPATCH_OK. Report the HTTP status and any status or URL from dispatch-response.json to the root."
+            "brief": "Dispatch the coding job to the owner's WORLD builder, which runs Claude Code as this swarm's hands (target repo qtzx06/opal, Discord bot). The spec is the world event payload itself; do not wait for other workers. Use the execute tool (shell) for all file work. 1) mkdir -p $HOME/world/<event id> and write dispatch.json there: {\"event_id\": <the world event id>, \"person_id\": <the first id in the event's people that is not stephen>, \"spec\": <the event payload object, verbatim>}. 2) POST it with: cd $HOME/world/<event id> && curl -sS -m 20 -o dispatch-response.json -w '%{http_code}' -H 'content-type: application/json' --data @dispatch.json http://host.docker.internal:8787/builder/dispatch > dispatch-status.txt || echo \"unreachable: curl exit $?\" > dispatch-status.txt. The builder dedupes by event_id, so never post twice. 3) Verify with: test -s $HOME/world/<event id>/dispatch.json && test -s $HOME/world/<event id>/dispatch-status.txt && echo DISPATCH_OK. Report the HTTP status and any job id, status, or URL from dispatch-response.json to the root."
           }
         ]
       }

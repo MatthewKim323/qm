@@ -169,6 +169,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
     fireKey: string;
     threadRef: string;
     track: boolean;
+    workers?: string[];
   }
 
   async function fire(event: WorldEvent, f: Fire): Promise<boolean> {
@@ -212,6 +213,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
             .map((p) => (isObj(p) && typeof p.id === "string" ? p.id : typeof p === "string" ? p : ""))
             .filter(Boolean),
           project: event.project ?? null,
+          ...(f.workers?.length ? { plannedWorkers: f.workers } : {}),
           ...(str(event.payload.feature) ? { feature: str(event.payload.feature)! } : {}),
         })
         .catch((e: unknown) => reportFailure("worldhooks: track", e, f.fireKey));
@@ -331,6 +333,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
           fireKey,
           threadRef: fireKey,
           track: true,
+          ...(route.swarm ? { workers: route.swarm.workers.map((w) => w.name) } : {}),
         });
         if (fired) routedKey = fireKey;
         else duplicate = true;
@@ -354,6 +357,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
             fireKey,
             threadRef: fireKey,
             track: true,
+            ...(watch.swarm ? { workers: watch.swarm.workers.map((w) => w.name) } : {}),
           });
           if (!fired) continue;
           await watches.markFired(watch.id, event.id);

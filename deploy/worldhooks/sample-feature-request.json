@@ -1,21 +1,22 @@
 {
-  "id": "evt_01J8MATTHEWFEAT01",
+  "id": "evt_01J8MATTHEWRECAP1",
   "type": "feature_request.detected",
   "ts": "2026-09-27T21:30:00Z",
-  "source": "manual",
-  "confidence": 0.91,
-  "people": [{ "id": "matthew", "name": "Matthew", "enrolled": true }],
+  "source": "quest3s",
+  "confidence": 0.93,
+  "people": [
+    {
+      "id": "matthew",
+      "name": "Matthew",
+      "enrolled": true
+    }
+  ],
   "project": "opal",
   "payload": {
     "product": "Opal",
-    "feature": "Add a dark mode toggle to the landing page",
-    "request": "Matthew wants a dark mode toggle in the Opal landing page header so he can demo it at night",
-    "requested_by": "matthew",
-    "acceptance": [
-      "A toggle is visible in the landing header",
-      "Clicking it switches the page to a dark theme",
-      "The choice persists on reload"
-    ],
-    "repo": "qtzx06/opal"
+    "feature": "Add !recap command",
+    "request": "A !recap command in the Discord bot that shows what Opal remembers about you from past sessions, in Opal's voice",
+    "requested_by": "Matthew",
+    "acceptance": ["`!recap` replies in the channel", "Uses the bot's existing memory, in Opal's persona"]
   }
 }
