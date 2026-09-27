@@ -53,6 +53,53 @@ function capInput(input: Record<string, unknown>): Record<string, unknown> {
   return capped ?? input;
 }
 
+const READ_ONLY_HEADS = new Set([
+  "cat",
+  "ls",
+  "grep",
+  "egrep",
+  "rg",
+  "head",
+  "tail",
+  "jq",
+  "find",
+  "wc",
+  "env",
+  "printenv",
+  "pwd",
+  "echo",
+  "sleep",
+  "curl",
+  "stat",
+  "file",
+  "which",
+  "sort",
+  "uniq",
+  "cut",
+  "true",
+]);
+const WRITE_SIGNS =
+  /(^|[^0-9&])>{1,2}(?!&)|\btee\b|\b(?:mkdir|rm|mv|cp|touch|chmod|ln|install|sed\s+-i|git\s+(?:commit|push|add|tag))\b|\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|\s(?:-d|--data(?:-raw|-binary)?|-F|--form|-T|--upload-file)[\s=@]|\btest\s|\[\s/;
+
+/**
+ * A shell command that only looks (reads files, lists, GETs an API, waits). Traces record these as
+ * reads so a recalled procedure lists them as skippable context instead of decisive steps; every
+ * other command stays an execute.
+ */
+export function readOnlyCommand(command: string): boolean {
+  const cmd = command.trim();
+  if (!cmd || WRITE_SIGNS.test(cmd)) return false;
+  const segments = cmd
+    .split(/\|\||&&|;|\||\n/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return segments.every((part) => {
+    const head = part.replace(/^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+/, "").split(/\s+/)[0] ?? "";
+    if (head === "python3" || head === "python") return /-m\s+json\.tool/.test(part);
+    return READ_ONLY_HEADS.has(head);
+  });
+}
+
 function securityTainted(entry: SessionEntry): boolean {
   return (entry.payload as { securityTainted?: unknown } | null)?.securityTainted === true;
 }
@@ -114,7 +161,9 @@ export function captureSession(sessionId: string, entries: SessionEntry[]): Memo
     if (!payload || typeof payload.tool !== "string") continue;
     const { tool, callId, ...input } = payload;
     const outcome = typeof callId === "string" ? outcomes.get(callId)?.shift() : undefined;
-    current.tool_calls.push({ name: tool, input: capInput(input), ...(outcome ? { result: outcome } : {}) });
+    const isExec = tool === "execute" || (tool === "sandbox" && input.action === "exec");
+    const name = isExec && typeof input.command === "string" && readOnlyCommand(input.command) ? "read" : tool;
+    current.tool_calls.push({ name, input: capInput(input), ...(outcome ? { result: outcome } : {}) });
   }
   close();
   return { session_id: sessionId, scope_id: scopeId, workflows };

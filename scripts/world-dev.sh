@@ -84,6 +84,7 @@ WORLD_HUD_URL=${WORLD_HUD_URL:-http://localhost:8787/hud}
 WORLD_HOOKS_SECRET=${keep_secret:-world-$(openssl rand -hex 24)}
 MEMORY_PROVIDER_CONFIG=${mpc}
 MEMORABLE_BACKEND=qm
+MEMORABLE_VARIANT=l2
 MEMORABLE_DB_URL=${db}
 EOF
   fi

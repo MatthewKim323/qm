@@ -190,3 +190,22 @@ test("world-event turns recall by a stable task line, not by per-event noise", a
   );
   assert.equal(procedureTaskLine("  fix the\nbuild  "), "fix the build");
 });
+
+test("capture records look-only shell commands as reads", async () => {
+  const { readOnlyCommand } = await import("../src/memory/memorable/capture.ts");
+  const reads = [
+    'curl -s -H "x-agent-capability: $AGENT_API_TOKEN" "$AGENT_API_URL/v1/apis" | jq \'.\' 2>/dev/null | head -200',
+    'sleep 30; curl -s "$AGENT_API_URL/v1/swarm?read=1&after=0" | python3 -m json.tool',
+    "ls -la $HOME/world/ 2>&1; cat $HOME/world/signals/canvas-onboarding.log",
+  ];
+  const writes = [
+    "mkdir -p $HOME/world/evt && cat > $HOME/world/evt/context.md << 'EOF'\nx\nEOF",
+    'curl -s -X POST "$AGENT_API_URL/v1/swarm" -d @body.json',
+    "test -s $HOME/world/evt/reply.md && grep -q OK $HOME/world/evt/reply.md && echo REPLY_OK",
+    'curl -s -o out.json -H "content-type: application/json" --data @dispatch.json http://host.docker.internal:8787/builder/dispatch',
+    "echo hi > file.txt",
+    "./test.sh",
+  ];
+  for (const c of reads) assert.equal(readOnlyCommand(c), true, c);
+  for (const c of writes) assert.equal(readOnlyCommand(c), false, c);
+});
