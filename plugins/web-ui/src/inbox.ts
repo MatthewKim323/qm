@@ -583,10 +583,12 @@ async function selectInboxFilter(filter: InboxFilter): Promise<void> {
   inboxState.filterBusy = true;
   drawAll();
   try {
-    await putUiState("inbox-filter", filter, Date.now());
+    const saved = await putUiState("inbox-filter", filter, Date.now());
     feedWindows.clear();
     await refreshInbox();
     if (inboxState.error) notify(inboxState.error);
+    else if (!saved.ok)
+      notify("A newer inbox filter was already saved. Your selection wasn't saved. Please try again.");
   } catch (error) {
     notify(error instanceof Error ? error.message : "Could not save inbox filter");
   } finally {

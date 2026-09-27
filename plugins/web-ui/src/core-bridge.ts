@@ -722,7 +722,12 @@ export function fetchUiState(key: string): Promise<UiStateRecord> {
   return api<UiStateRecord>(`/api/ui-state?key=${encodeURIComponent(key)}`);
 }
 
-export function putUiState(key: string, value: unknown, updatedAt: number, init?: RequestInit): Promise<unknown> {
+export function putUiState(
+  key: string,
+  value: unknown,
+  updatedAt: number,
+  init?: RequestInit,
+): Promise<{ ok: boolean; updatedAt: number }> {
   return api("/api/ui-state", { method: "PUT", body: JSON.stringify({ key, value, updatedAt }), ...init });
 }
 

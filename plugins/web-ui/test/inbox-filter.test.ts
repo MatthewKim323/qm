@@ -60,6 +60,7 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   } = await inboxUi(t);
   let saved = "triaged";
   let failSave = false;
+  let rejectSave = false;
   let race: "preference" | "mismatch" | undefined;
   let requests: URL[] = [];
   const writes: unknown[] = [];
@@ -75,6 +76,7 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
       const body = JSON.parse(String(options?.body));
       assert.equal(body.key, "inbox-filter");
       if (failSave) return Response.json({ message: "Offline" }, { status: 503 });
+      if (rejectSave) return Response.json({ ok: false, updatedAt: Date.now() + 1000 });
       writes.push(body.value);
       saved = body.value;
       return Response.json({ ok: true });
@@ -195,6 +197,25 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   chooseFilter("triaged");
   await settled();
   assert.equal(filterSelect().value, "all");
+  assert.equal(inboxState.notice, "Offline");
+  failSave = false;
+  rejectSave = true;
+  saved = "human";
+  chooseFilter("triaged");
+  await settled();
+  assert.equal(filterSelect().value, "human");
+  assert.deepEqual(titles(), ["Please review the launch plan", "Thanks, all set", "Quick question"]);
+  assert.deepEqual(writes, ["human", "all"]);
+  assert.equal(
+    host.querySelector('[role="status"]')?.textContent,
+    "A newer inbox filter was already saved. Your selection wasn't saved. Please try again.",
+  );
+  rejectSave = false;
+  chooseFilter("triaged");
+  await settled();
+  assert.equal(filterSelect().value, "triaged");
+  assert.deepEqual(titles(), ["Please review the launch plan"]);
+  assert.deepEqual(writes, ["human", "all", "triaged"]);
   inboxState.items.push(
     toInboxItem({ ...entries[0], id: "sent", state: "actioned", sourcePayload: { automated: true } }),
   );
