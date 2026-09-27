@@ -173,6 +173,7 @@ import { createScheduler, type Scheduler } from "./cron/scheduler.ts";
 import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
+import { createWorldHookReceiver, type WorldHookReceiver } from "./worldhooks/world-hook-receiver.ts";
 import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./deploy/deploy-store.ts";
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
@@ -505,6 +506,7 @@ export interface BuiltApp {
   scheduler: Scheduler;
   loops: LoopServiceDeps;
   webhookReceiver: WebhookReceiver;
+  worldHooks?: WorldHookReceiver;
   loopIngress: LoopIngressService;
   admin: AdminService;
   rateLimiter: RateLimiter;
@@ -2493,6 +2495,17 @@ export function buildApp(
     directory,
     currentScopeMembers,
   });
+  const worldHooks = config.worldHooks
+    ? createWorldHookReceiver({
+        config: config.worldHooks,
+        deliveries,
+        idempotency,
+        identity,
+        run: (req) => app.turn(req),
+        directory,
+        currentScopeMembers,
+      })
+    : undefined;
   const backgroundOwnership = config.backgroundDeploymentId
     ? {
         store: createBackgroundOwnershipStore(artifactMap<BackgroundOwnership>("background_ownership")),
@@ -2776,6 +2789,7 @@ export function buildApp(
     scheduler,
     loops,
     webhookReceiver,
+    ...(worldHooks ? { worldHooks } : {}),
     loopIngress,
     admin,
     rateLimiter,
@@ -2923,6 +2937,7 @@ export function serverDeps(
     ...(config.deployAppsLoginPath ? { deployAppsLoginPath: config.deployAppsLoginPath } : {}),
     scheduler: built.scheduler,
     webhookReceiver: built.webhookReceiver,
+    ...(built.worldHooks ? { worldHooks: built.worldHooks } : {}),
     loopIngress: built.loopIngress,
     identity: built.identity,
     principalLinks: built.principalLinks,

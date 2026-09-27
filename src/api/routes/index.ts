@@ -10,6 +10,7 @@ import { blobRoutes } from "./blobs.ts";
 import { sessionStateRawRoutes } from "./session-state.ts";
 import { loopItemEventsRawRoutes } from "./loop-item-events.ts";
 import { webhookRawRoutes, webhookRoutes } from "./webhooks.ts";
+import { worldEventRawRoutes } from "./world-events.ts";
 import { runEventRoutes } from "./run-events.ts";
 import { turnRoutes } from "./turns.ts";
 import { credentialRoutes } from "./credentials.ts";
@@ -79,6 +80,7 @@ export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   ...sessionStateRawRoutes,
   ...loopItemEventsRawRoutes,
   ...webhookRawRoutes,
+  ...worldEventRawRoutes,
   ...loopIngressRawRoutes,
 ];
 

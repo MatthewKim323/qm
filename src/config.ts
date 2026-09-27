@@ -42,6 +42,7 @@ import {
 } from "./model/pi-models.ts";
 
 import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
+import { loadWorldHooksConfig, type WorldHooksConfig } from "./worldhooks/world-hooks-config.ts";
 
 export interface Config {
   productAnalytics?: { apiKey: string; host?: string };
@@ -50,6 +51,7 @@ export interface Config {
   suggestedActivitiesContext?: string;
   swarmsEnabled?: boolean;
   swarmDefaults?: SwarmSettings;
+  worldHooks?: WorldHooksConfig;
   production: boolean;
   allowUnauthenticatedCore: boolean;
   port: number;
@@ -1144,6 +1146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         "Background ownership requires a distinct DEPLOYMENT_CONTROL_SECRET of at least 32 characters and CORE_SIGNING_SECRET",
       );
   }
+  const worldHooks = loadWorldHooksConfig(env);
   const swarmDefaults = resolveSwarmSettings(
     env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
   );
@@ -1536,6 +1539,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     turnWallClockMs,
     swarmsEnabled: boolEnvStrict("SWARMS_ENABLED", env.SWARMS_ENABLED) ?? true,
     swarmDefaults,
+    ...(worldHooks ? { worldHooks } : {}),
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
     backgroundJobTtlMs:

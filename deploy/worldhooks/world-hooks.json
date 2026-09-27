@@ -1,0 +1,31 @@
+{
+  "owner": "matt",
+  "ownerScopeId": "personal:matt",
+  "routes": {
+    "customer_feedback.detected": {
+      "action": "A customer gave product feedback in person. Resolve who they are, connect the feedback to prior signals, and prepare the follow-up the owner promised. Everything external stays a draft until the owner approves it.",
+      "swarm": {
+        "workers": [
+          {
+            "role": "context",
+            "name": "Context",
+            "brief": "Resolve who this person and company are. Use the GBrain tools (search, query, get_page) for the person, their company, the project, the last interaction, and any open loops in either direction. Report a five line person card: name, role and company, relationship, last topic, what they owe and what we owe."
+          },
+          {
+            "role": "product",
+            "name": "Product",
+            "brief": "Treat the feedback as a product signal. Search GBrain and any connected issue tracker for similar feedback about the same product and feature, count the distinct customers, name the likely failing stage, and draft one issue (title, evidence with customer count, suggested fix). Do not file it; report the draft."
+          },
+          {
+            "role": "followup",
+            "name": "Follow-up",
+            "brief": "Find what was promised to this person (commitment.detected events and GBrain commitments), locate the promised asset (demo link, doc), and draft a short reply in the owner's voice. Never send email, Slack, or any external message; report the draft and mark it as awaiting owner approval."
+          }
+        ]
+      }
+    },
+    "commitment.detected": {
+      "action": "The owner made a commitment in person. Record it, find the asset it refers to if one exists, and reply with a one line reminder. Do not contact the recipient."
+    }
+  }
+}
