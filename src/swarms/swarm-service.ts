@@ -81,6 +81,11 @@ export interface SwarmService {
    * waits, its workers' messages to it are not also queued as notification turns.
    */
   awaitWorkers(caller: SwarmCaller, options: { waitMs?: number }): Promise<AwaitResult>;
+  /** One blocking call for a worker that needs a peer's output: waits for the named member's first message to it. */
+  awaitPeer(
+    caller: SwarmCaller,
+    options: { name: string; waitMs?: number },
+  ): Promise<{ done: boolean; name: string; messages: Array<{ seq: number; text: string }> }>;
   binding(input: OrchestratorInput): Promise<{ sandboxId?: string; rootSessionId: string; member: SwarmMember } | null>;
 }
 
@@ -366,7 +371,14 @@ export function createSwarmService(deps: {
     const label = [typeof name === "string" ? name : "", typeof role === "string" ? `(${role})` : ""]
       .filter(Boolean)
       .join(" ");
-    return `Your swarm role${label ? `: ${label}` : ""}. Brief from your spawn context:\n${brief.trim()}\n\n`;
+    const batch = Object.values(swarm.spawnRequests).find((request) => request.memberIds.includes(recipient.id));
+    const peers = (batch?.memberIds ?? [])
+      .filter((id) => id !== recipient.id)
+      .map((id) => swarm.members.find((member) => member.id === id))
+      .filter((member): member is SwarmMember => !!member)
+      .map((member) => `${memberName(member.context) ?? "worker"}=${member.id}`);
+    const roster = `Your id is ${recipient.id}; the root (parent) is ${recipient.parentId}${peers.length ? `; peer workers: ${peers.join(", ")}` : ""}.`;
+    return `Your swarm role${label ? `: ${label}` : ""}. Brief from your spawn context:\n${brief.trim()}\n${roster}\n\n`;
   }
 
   function dispatchRequest(swarm: Swarm, message: SwarmMessage, recipient: SwarmMember): OrchestratorInput {
@@ -796,6 +808,25 @@ export function createSwarmService(deps: {
         }
       } finally {
         awaiting.delete(key);
+      }
+    },
+    async awaitPeer(caller, options) {
+      let { auth, swarm } = await load(caller);
+      const waitMs = options.waitMs ?? 0;
+      if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > AWAIT_MAX_MS) throw new Error("invalid await bounds");
+      if (typeof options.name !== "string" || !options.name.trim()) throw new Error("peer name required");
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const peer = swarm.members.find((member) => memberName(member.context) === options.name);
+        const messages = peer
+          ? swarm.messages
+              .filter((message) => message.senderId === peer.id && message.audience.includes(auth.memberId))
+              .map((message) => ({ seq: message.seq, text: message.text }))
+          : [];
+        const done = messages.length > 0 || peer?.state === "failed";
+        if (done || Date.now() >= deadline) return { done, name: options.name, messages };
+        await sleep(Math.min(500, deadline - Date.now()));
+        ({ auth, swarm } = await load(caller));
       }
     },
     async binding(input) {

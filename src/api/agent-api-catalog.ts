@@ -66,7 +66,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "GET",
         path: "/v1/swarm",
         summary:
-          "own identity and all peers with editable JSON context, session IDs and sandbox IDs; ?read=1&after=0&waitMs=0&replyTo=... reads scoped messages, not only intended audience; ?await=workers&waitMs=<=290000 blocks once until every worker you spawned has reported (or failed) and returns {done, reports, pending}: use it instead of polling",
+          "own identity and all peers with editable JSON context, session IDs and sandbox IDs; ?read=1&after=0&waitMs=0&replyTo=... reads scoped messages, not only intended audience; ?await=workers&waitMs=<=290000 blocks once until every worker you spawned has reported (or failed) and returns {done, reports, pending}: use it instead of polling; ?await=peer&name=<peer context name>&waitMs=... blocks once for that peer's message to you",
       },
       {
         method: "POST",

@@ -129,8 +129,11 @@ export function parseWorldEvent(rawBody: string): WorldEvent | string {
 const MAX_SPAWN_EVENT_CHARS = 11_000;
 
 /** How a worker reports: once, to the member that spawned it, without waking it for a new turn. */
-export const WORKER_REPORT_RULE =
-  'When your verifying command has passed, report exactly once with POST $AGENT_API_URL/v1/swarm and body {"action":"send","requestId":"report","audience":"parent","notify":false,"text":<your report>}. That report ends your work: do not read or poll the swarm, do not message other workers, and do not wait for anyone. Never contact anyone outside QM; drafts only.';
+export const WORKER_REPORT_RULE = [
+  'Report to the root exactly once, when your verifying command has passed: POST $AGENT_API_URL/v1/swarm with {"action":"send","requestId":"report","audience":"parent","notify":false,"text":<your report>}. That report ends your work.',
+  'If your brief has you message another worker, send it once with that worker\'s id as audience and "notify":false. If your brief has you wait for another worker, make ONE blocking call instead of reading or polling: curl -sS -m 100 -H "x-agent-capability: $AGENT_API_TOKEN" "$AGENT_API_URL/v1/swarm?await=peer&name=<worker name>&waitMs=60000" (it returns {done, messages}); never sleep-loop on ?read=1.',
+  "Never contact anyone outside QM; drafts only.",
+].join(" ");
 
 export interface WorldSpawnBody {
   action: "spawn";

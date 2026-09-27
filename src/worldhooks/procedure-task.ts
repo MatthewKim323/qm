@@ -57,7 +57,11 @@ export function worldWorkerTaskLine(text: string): string | undefined {
   const product = /"product":\s*"([^"]{1,60})"/.exec(payload)?.[1];
   const feature = /"feature":\s*"([^"]{1,80})"/.exec(payload)?.[1];
   const subject = [product, feature].filter(Boolean).join(" ");
-  const stableBrief = brief!.split(eventId!).join("<event id>").replace(/\s+/g, " ");
+  const stableBrief = brief!
+    .replace(/\nYour id is [\s\S]*$/, "")
+    .split(eventId!)
+    .join("<event id>")
+    .replace(/\s+/g, " ");
   return `World swarm worker ${label} for ${type}${subject ? ` about ${subject}` : ""}: ${stableBrief}`
     .slice(0, MAX_TASK_CHARS)
     .trim();

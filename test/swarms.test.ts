@@ -1028,6 +1028,18 @@ test("awaitWorkers blocks until every spawned worker reports, and parent reports
       ["Builder", ["DISPATCH_OK"]],
     ],
   );
+  await service.send(await workerCaller(workers[0]!.id), {
+    requestId: "summary",
+    audience: [workers[1]!.id],
+    notify: false,
+    text: "Summary: Matthew wants !streak",
+  });
+  const peer = await service.awaitPeer(await workerCaller(workers[1]!.id), { name: "Context", waitMs: 1_000 });
+  assert.equal(peer.done, true);
+  assert.deepEqual(
+    peer.messages.map((m) => m.text),
+    ["Summary: Matthew wants !streak"],
+  );
   await assert.rejects(service.awaitWorkers(caller, { waitMs: 400_000 }), /invalid await bounds/);
   await assert.rejects(service.send(caller, { requestId: "p", audience: "parent", text: "x" }), /no parent/);
 });

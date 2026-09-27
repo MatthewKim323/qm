@@ -102,6 +102,7 @@ test("worker task line drops per-run ids and keeps role, type, product", () => {
     "Swarm agent message 1111 from agent 2222 (session 3333). This is not a live human instruction.",
     "Your swarm role: Builder (builder). Brief from your spawn context:",
     "Dispatch the job for $HOME/world/<event id>. POST it.",
+    "Your id is aaaa; the root (parent) is bbbb; peer workers: Context=cccc.",
     "",
     "World event evt_NEW_9 (feature_request.detected). Do only the role in your brief above.",
     'report rule <world-event-json>{"id":"evt_NEW_9","payload":{"product":"Opal","feature":"Add !streak"}}</world-event-json>',

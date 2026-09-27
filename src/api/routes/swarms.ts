@@ -28,6 +28,16 @@ async function swarmRequest(ctx: ApiCtx): Promise<void> {
           await app.swarms.awaitWorkers(caller, { waitMs: Number(url.searchParams.get("waitMs") ?? 0) }),
         );
       }
+      if (url.searchParams.get("await") === "peer") {
+        return sendJson(
+          res,
+          200,
+          await app.swarms.awaitPeer(caller, {
+            name: url.searchParams.get("name") ?? "",
+            waitMs: Number(url.searchParams.get("waitMs") ?? 0),
+          }),
+        );
+      }
       if (url.searchParams.get("read") === "1") {
         const messages = await app.swarms.read(caller, {
           after: Number(url.searchParams.get("after") ?? 0),

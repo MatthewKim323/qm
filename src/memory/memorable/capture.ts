@@ -88,7 +88,8 @@ const WRITE_SIGNS =
  */
 export function readOnlyCommand(command: string): boolean {
   const cmd = command.trim();
-  if (!cmd || WRITE_SIGNS.test(cmd)) return false;
+  // A blocking swarm await is the coordination step itself, not a look.
+  if (!cmd || WRITE_SIGNS.test(cmd) || /[?&]await=/.test(cmd)) return false;
   const segments = cmd
     .split(/\|\||&&|;|\||\n/)
     .map((part) => part.trim())
