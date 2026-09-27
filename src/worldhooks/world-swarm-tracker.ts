@@ -3,6 +3,7 @@ import type { MemoryService } from "../memory/memory-service.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { ScopeId } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
+import { setProcedureQuery, type ProcedureDoc } from "./world-recall.ts";
 
 /**
  * Follows one WorldHook turn (root session plus any swarm workers) from the durable stores,
@@ -45,6 +46,13 @@ export interface RecallEvent {
   scopeId: string;
   task: string;
   block: string;
+  /** Thread of the turn that recalled: the run's fire key, or `swarm:<root session>:<member>` for a worker. */
+  threadRef?: string;
+  /** Set when the hit was turned into an action checklist from the stored procedure. */
+  title?: string;
+  steps?: number;
+  slug?: string;
+  procedure?: ProcedureDoc;
 }
 
 /** Memorable recall hits, emitted by the memorable memory provider. */
@@ -131,6 +139,7 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
   const maxMs = deps.maxMs ?? 20 * 60_000;
   const log = deps.log ?? ((line: string) => console.log(line));
   const reports: WorldRunReport[] = [];
+  setProcedureQuery(deps.q);
 
   async function hud(message: Record<string, unknown>): Promise<void> {
     if (!deps.hudUrl) return;
@@ -266,29 +275,47 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
     const startedAt = Date.now();
     const recalled: Array<{ title: string; steps: number }> = [];
     const bridged = new Set<string>();
+    let rootId: string | undefined;
+    const ownRoot = async (): Promise<string | undefined> => {
+      rootId ??= (await deps.q("select id from sessions where thread_ref = $1 limit 1", [req.fireKey]))[0]?.id as
+        string | undefined;
+      return rootId;
+    };
+    const mine = async (threadRef: string | undefined): Promise<boolean> => {
+      if (!threadRef) return false;
+      if (threadRef === req.fireKey) return true;
+      const m = /^swarm:([^:]+):/.exec(threadRef);
+      return !!m && decodeURIComponent(m[1]!) === (await ownRoot());
+    };
     const onRecall = (e: RecallEvent) => {
       if (e.scopeId !== req.scopeId) return;
-      const hit = parseRecallBlock(e.block);
-      recalled.push(hit);
-      if (deps.proceduresUrl && !bridged.has(hit.title)) {
-        bridged.add(hit.title);
-        void deps
-          .q(
-            "select json from memorable_procedures where json->>'scope_id' = $1 and json->>'title' = $2 order by json->>'created_at' desc limit 1",
-            [req.scopeId, hit.title],
-          )
-          .then((rows) => {
-            const json = rows[0]?.json as Record<string, unknown> | undefined;
-            if (json) return bridge("recalled", json, req);
-          })
-          .catch((err: unknown) => log(`[worldhooks] recall lookup failed: ${errMessage(err)}`));
-      }
-      if (recalled.length === 1)
-        void hud({
-          kind: "memory_event",
-          text: "RECALLED PROCEDURE",
-          detail: hit.steps ? `${hit.title} · ${hit.steps} steps` : hit.title,
-        });
+      void mine(e.threadRef)
+        .then(async (ok) => {
+          if (!ok) return;
+          const parsed = parseRecallBlock(e.block);
+          const hit = { title: e.title ?? parsed.title, steps: e.steps ?? parsed.steps };
+          recalled.push(hit);
+          const key = `${hit.title}\u0000${e.threadRef}`;
+          if (bridged.has(key)) return;
+          bridged.add(key);
+          await hud({
+            kind: "memory_event",
+            text: "RECALLED PROCEDURE",
+            detail: hit.steps ? `${hit.title} · ${hit.steps} steps` : hit.title,
+            event_id: req.eventId,
+            hook: req.type,
+          });
+          let json = e.procedure as Record<string, unknown> | undefined;
+          if (!json) {
+            const rows = await deps.q(
+              "select json from memorable_procedures where json->>'scope_id' = $1 and json->>'title' = $2 order by json->>'created_at' desc limit 1",
+              [req.scopeId, hit.title],
+            );
+            json = rows[0]?.json as Record<string, unknown> | undefined;
+          }
+          if (json) await bridge("recalled", json, req);
+        })
+        .catch((err: unknown) => log(`[worldhooks] recall report failed: ${errMessage(err)}`));
     };
     memorableEvents.on("recall", onRecall);
     try {
@@ -394,13 +421,18 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
         }
       }
     }
-    if (captured > 0 && deps.proceduresUrl) {
+    const learnedDocs: Array<Record<string, unknown>> = [];
+    if (captured > 0) {
       const rows = await deps
         .q("select json from memorable_procedures where json->>'session_id' = any($1::text[])", [
           per.map(({ s }) => s.sessionId),
         ])
         .catch(() => [] as Rows);
-      for (const row of rows) await bridge("learned", row.json as Record<string, unknown>, req, total);
+      for (const row of rows) {
+        const json = row.json as Record<string, unknown>;
+        learnedDocs.push(json);
+        await bridge("learned", json, req, total);
+      }
     }
     const report: WorldRunReport = {
       eventId: req.eventId,
@@ -431,6 +463,17 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
     log(
       `[worldhooks] ${req.fireKey} complete turns=${total.turns} toolCalls=${total.toolCalls} toolErrors=${total.toolErrors} wall=${fmtS(total.wallMs)} recalled=${recalled.length} captured=${captured}`,
     );
+    if (learnedDocs.length) {
+      const root = learnedDocs.find((d) => d.session_id === per[0]?.s.sessionId) ?? learnedDocs[0]!;
+      const steps = ((root.payload as { steps?: unknown[] } | undefined)?.steps ?? []).length;
+      await hud({
+        kind: "memory_event",
+        text: "PROCEDURE LEARNED",
+        detail: `${String(root.title ?? req.type)} · ${steps} steps`,
+        event_id: req.eventId,
+        hook: req.type,
+      });
+    }
     if (recalled.length && baseline) {
       const better =
         report.total.toolCalls <= baseline.total.toolCalls &&
@@ -439,9 +482,9 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
         kind: "memory_event",
         text: better ? "LEARNED FROM RUN 1" : "RUN 2 VS RUN 1 (NO GAIN)",
         detail: learnedLine(baseline, report),
+        event_id: req.eventId,
+        hook: req.type,
       });
-    } else if (captured > 0) {
-      await hud({ kind: "memory_event", text: "PROCEDURE LEARNED", detail: `${req.type} · ${captured} workflows` });
     }
     return report;
   }
