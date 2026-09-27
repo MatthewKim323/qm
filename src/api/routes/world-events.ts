@@ -2,6 +2,7 @@ import { errMessage } from "../../util/errors.ts";
 import { PayloadTooLargeError, readRawBody, sendJson } from "../http.ts";
 import type { BaseCtx, Route } from "./route.ts";
 import { parseAdopt } from "../../worldhooks/world-entities.ts";
+import { setWorldRecall, worldRecallEnabled } from "../../worldhooks/world-recall.ts";
 
 async function incomingWorldEvent(ctx: BaseCtx): Promise<void> {
   const { req, res, deps } = ctx;
@@ -98,6 +99,20 @@ async function listRuns(ctx: BaseCtx): Promise<void> {
   return sendJson(ctx.res, 200, { runs: (await ctx.deps.worldHooks!.tracker?.reports()) ?? [] });
 }
 
+/** Measurement switch: world swarms still record procedures, but recall is skipped while off. */
+async function recallSetting(ctx: BaseCtx): Promise<void> {
+  const a = await authed(ctx);
+  if (!a) return;
+  if (ctx.method === "POST") {
+    const body = jsonBody(a.rawBody) as { enabled?: unknown } | undefined;
+    if (typeof body?.enabled !== "boolean")
+      return sendJson(ctx.res, 400, { error: "bad_request", message: "enabled must be a boolean" });
+    setWorldRecall(body.enabled);
+    console.log(`[worldhooks] world recall ${body.enabled ? "on" : "off"}`);
+  }
+  return sendJson(ctx.res, 200, { recall: worldRecallEnabled() });
+}
+
 export const worldEventRawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   { method: "POST", path: "/world-events", auth: "public", handle: incomingWorldEvent },
   { method: "POST", path: "/v1/world-events", auth: "public", handle: incomingWorldEvent },
@@ -107,4 +122,6 @@ export const worldEventRawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   { method: "POST", path: "/world-entities/adopt", auth: "public", handle: adoptEntity },
   { method: "GET", path: "/world-entities", auth: "public", handle: listEntities },
   { method: "GET", path: "/world-runs", auth: "public", handle: listRuns },
+  { method: "GET", path: "/world-recall", auth: "public", handle: recallSetting },
+  { method: "POST", path: "/world-recall", auth: "public", handle: recallSetting },
 ];

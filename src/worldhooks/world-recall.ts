@@ -46,6 +46,15 @@ const MAX_CMD_CHARS = 220;
 const MAX_STEPS = 6;
 
 let lookup: Query | undefined;
+let recallOn = true;
+
+export function setWorldRecall(on: boolean): void {
+  recallOn = on;
+}
+
+export function worldRecallEnabled(): boolean {
+  return recallOn;
+}
 
 /** Wiring hands the Postgres query used to read Memorable's stored procedures (QM backend). */
 export function setProcedureQuery(q: Query | undefined): void {

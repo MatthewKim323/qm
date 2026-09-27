@@ -4,7 +4,7 @@ import { captureSession, type MemorableCapture, type MemorableToolCall } from ".
 import { memorableInject } from "./inject.ts";
 import { relayRecord } from "./relay.ts";
 import { memorableEvents } from "../../worldhooks/world-swarm-tracker.ts";
-import { refineWorldRecall } from "../../worldhooks/world-recall.ts";
+import { refineWorldRecall, worldRecallEnabled, worldTaskFamily } from "../../worldhooks/world-recall.ts";
 
 export interface MemorableProviderDeps {
   argv: readonly string[];
@@ -64,12 +64,20 @@ export function createMemorableMemoryProvider(deps: MemorableProviderDeps): Memo
     async recall(scopeId: ScopeId, context) {
       const task = context?.query?.trim();
       if (!task) return "";
+      const world = worldTaskFamily(task);
+      if (world && !worldRecallEnabled()) return "";
       const block = await inject(deps.argv, scopeId, task, spawnOpts, deps.injectTimeoutMs);
       if (!block) return "";
       const refined = await refine(scopeId, task, block).catch((e: unknown) => {
         console.log(`[memorable] world recall refine failed: ${e instanceof Error ? e.message : String(e)}`);
         return undefined;
       });
+      if (world && !refined) {
+        // Memorable matched, but nothing this role recorded for this event type: a different role's
+        // or a code-fix procedure would only mislead the worker.
+        console.log(`[memorable] recall hit scope=${scopeId} skipped: no procedure recorded for "${world}"`);
+        return "";
+      }
       const out = refined?.block ?? block;
       console.log(
         `[memorable] recall hit scope=${scopeId} chars=${out.length}${refined ? ` checklist="${refined.title}" steps=${refined.steps} skip=${refined.skipped}` : ""}`,
