@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { EMPTY_ENDING_NOTE } from "../../src/harness/pi-harness.ts";
+import { EMPTY_ENDING_NOTE } from "../../src/harness/empty-ending-note.ts";
 import { createCronStore } from "../../src/cron/cron-store.ts";
 import { createIdempotencyStore } from "../../src/idempotency/idempotency-store.ts";
 import { createLoopFireService } from "../../src/loops/loop-fire.ts";
