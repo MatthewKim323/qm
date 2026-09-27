@@ -10020,21 +10020,12 @@ h3.ambient-field-label {
   border-radius: var(--radius-sm);
   padding: 14px;
 }
-.inbox-chat-suggestions {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-.inbox-chat-suggestions > .primary {
-  flex: none;
-}
+.inbox-chat-suggestions,
 .inbox-edit-suggestions {
   display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: center;
   gap: 6px;
-  justify-content: center;
 }
 .inbox-dismiss {
   flex: none;
