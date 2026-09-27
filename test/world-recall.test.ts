@@ -80,11 +80,11 @@ test("swarm polling and look-only steps are skippable; writes are not", () => {
   assert.equal(skippable({ action: "memory", activity_class: "search" }), true);
 });
 
-test("refine looks the matched procedure up by title within the same role, else newest for the role", async () => {
+test("refine replays the role's newest recording for the event type, not another role's", async () => {
   const calls: unknown[][] = [];
-  const q = async (text: string, params?: unknown[]) => {
+  const q = async (_text: string, params?: unknown[]) => {
     calls.push(params ?? []);
-    return text.includes("json->>'title'") ? [] : [{ json: builder }];
+    return [{ json: builder }];
   };
   const r = await refineWorldRecall(
     "personal:stephen",
@@ -93,7 +93,9 @@ test("refine looks the matched procedure up by title within the same role, else 
     q,
   );
   assert.equal(r?.title, builder.title);
-  assert.equal(calls.length, 2);
+  assert.deepEqual(calls, [
+    ["personal:stephen", "%World swarm worker Builder (builder) for feature_request.detected%"],
+  ]);
   assert.equal(await refineWorldRecall("personal:stephen", "Fix tests", "block", q), undefined);
 });
 

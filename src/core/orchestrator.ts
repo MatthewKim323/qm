@@ -1455,6 +1455,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         ownerAuthAvailable = true;
       }
       const connectorEnv: Record<string, string> = {};
+      // World-event turns and their swarm workers read the owner's GBrain through the WORLD service proxy.
+      // Read-only token: it can't post world events or touch anything but the /gbrain/* read endpoints.
+      if (deps.worldSandboxEnv && /^(?:world|swarm):/.test(input.conversation.threadRef))
+        Object.assign(connectorEnv, deps.worldSandboxEnv);
       const credsStart = Date.now();
       const commandCredentials: CommandCredential[] = [];
       const credentialDescriptions: string[] = [];

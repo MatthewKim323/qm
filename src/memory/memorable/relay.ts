@@ -72,7 +72,20 @@ export function relayRecord(
     });
     child.on("error", (e) => finish({ ok: false, reason: e.message.slice(0, 200) }));
     child.on("exit", (code) => {
-      if (code === 0) return finish({ ok: true });
+      if (code === 0) {
+        for (const line of out.split("\n")) {
+          try {
+            const parsed = JSON.parse(line.trim()) as { refused?: Array<{ reason?: string }> };
+            for (const r of parsed.refused ?? [])
+              console.log(
+                `[memorable] record refused scope=${capture.scope_id} session=${capture.session_id}: ${r.reason ?? "?"}`,
+              );
+          } catch {
+            /* not the summary line */
+          }
+        }
+        return finish({ ok: true });
+      }
       const detail = err.replace(/\s+/g, " ").trim().slice(0, 300);
       finish({ ok: false, reason: refusalReason(out) ?? (detail ? `exit ${code}: ${detail}` : `exit ${code}`) });
     });

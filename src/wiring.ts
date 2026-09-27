@@ -1925,6 +1925,9 @@ export function buildApp(
     ...(config.publicUrl ? { webhookPublicUrl: config.publicUrl } : {}),
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
     memoryStrategy,
+    ...(config.worldHooks && process.env.GBRAIN_PROXY_TOKEN
+      ? { worldSandboxEnv: { GBRAIN_PROXY_TOKEN: process.env.GBRAIN_PROXY_TOKEN } }
+      : {}),
     ...(config.memoryProviderConfig
       ? {
           procedureRecall: (

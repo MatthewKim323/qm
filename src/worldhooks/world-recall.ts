@@ -129,10 +129,12 @@ export function compactCommand(command: string): string {
 export function endpointsOf(commands: string[]): string[] {
   const seen = new Set<string>();
   for (const cmd of commands) {
-    for (const m of genericize(cmd).matchAll(/(?:https?:\/\/|\$AGENT_API_URL|\$\{?WORLD_URL\}?)[^\s'"\\)]*/g)) {
-      const url = m[0].replace(/[;,]+$/, "");
-      const method = /-X\s*(POST|PUT|PATCH|DELETE)|--data|\s-d\s/.test(cmd) ? "POST" : "GET";
-      seen.add(`${method} ${url}`);
+    for (const segment of genericize(cmd).split(/\n|&&|;|\|\|/)) {
+      if (!/\bcurl\b/.test(segment)) continue;
+      const method =
+        /-X\s*(POST|PUT|PATCH|DELETE)/.exec(segment)?.[1] ?? (/--data|\s-d\s|\s-F\s/.test(segment) ? "POST" : "GET");
+      for (const m of segment.matchAll(/(?:https?:\/\/[^\s/'"]+|\$AGENT_API_URL)\/[^\s'"\\)]*/g))
+        seen.add(`${method} ${m[0].replace(/[;,]+$/, "")}`);
     }
   }
   return [...seen].slice(0, 6);
@@ -146,6 +148,8 @@ function describeSkip(step: ProcedureStep): string {
 export function renderWorldRecall(proc: ProcedureDoc, family: string): WorldRecall {
   const steps = proc.payload?.steps ?? [];
   const decisive = steps.filter((s) => !skippable(s) && s.command);
+  const show = (s: ProcedureStep): string =>
+    s.action === "write" || s.action === "files" ? `write file ${genericize(s.command!)}` : compactCommand(s.command!);
   const skipped = steps.filter((s) => skippable(s));
   const totalCalls = steps.reduce((n, s) => n + (s.repeat_count ?? 1), 0);
   const skippedCalls = skipped.reduce((n, s) => n + (s.repeat_count ?? 1), 0);
@@ -161,7 +165,7 @@ export function renderWorldRecall(proc: ProcedureDoc, family: string): WorldReca
     `Recalled for: ${family}. Last time this took ${totalCalls} tool calls; ${decisive.length} did the work.`,
     "",
     "Checklist from last time (this event's id replaces <event id>; combine steps into as few execute calls as you can):",
-    ...shown.map((s, i) => `  ${i + 1}. ${compactCommand(s.command!)}`),
+    ...shown.map((s, i) => `  ${i + 1}. ${show(s)}`),
     ...(endpoints.length ? ["", "Endpoints that worked:", ...endpoints.map((e) => `  - ${e}`)] : []),
     ...(verify ? ["", `Verified by: ${compactCommand(verify)}`] : []),
     ...(skipped.length
@@ -193,26 +197,19 @@ export function renderWorldRecall(proc: ProcedureDoc, family: string): WorldReca
 export async function refineWorldRecall(
   scopeId: string,
   task: string,
-  block: string,
+  _block: string,
   q: Query | undefined = lookup,
 ): Promise<WorldRecall | undefined> {
   const family = worldTaskFamily(task);
   if (!family || !q) return undefined;
-  const title = matchedTitle(block);
   const like = `%${family}%`;
-  let rows: Array<Record<string, unknown>> = [];
-  if (title)
-    rows = await q(
-      "select json from memorable_procedures where json->>'scope_id' = $1 and json->>'title' = $2 and json->'payload'->'trigger_signature'->>'search_text' like $3 order by json->>'created_at' desc limit 1",
-      [scopeId, title, like],
-    );
-  // Memorable's best hit can be another role's procedure from the same run; use the newest one
-  // recorded for this exact role and event type instead.
-  if (!rows.length)
-    rows = await q(
-      "select json from memorable_procedures where json->>'scope_id' = $1 and json->'payload'->'trigger_signature'->>'search_text' like $2 order by json->>'created_at' desc limit 1",
-      [scopeId, like],
-    );
+  // Memorable decides that this is a situation it has seen (the hit). Which recording to replay is
+  // this role's most recent one for the event type: the swarm plumbing changes between versions,
+  // and an older recording teaches the old way.
+  const rows = await q(
+    "select json from memorable_procedures where json->>'scope_id' = $1 and json->'payload'->'trigger_signature'->>'search_text' like $2 order by json->>'created_at' desc limit 1",
+    [scopeId, like],
+  );
   const json = rows[0]?.json as ProcedureDoc | undefined;
   if (!json?.payload?.steps?.length) return undefined;
   return renderWorldRecall(json, family);

@@ -183,7 +183,7 @@ export function worldSwarmPlan(
     "Run this as a swarm in three steps. The swarm plumbing is already decided; do not explore the swarm API or write spawn JSON yourself.",
     `1) Spawn the ${spawn.contexts.length} workers (${names}) with ONE execute call. QM already holds the full spawn request, world event included, so there is no separate send: curl -sS -m 60 -H "x-agent-capability: $AGENT_API_TOKEN" -H 'content-type: application/json' --data '{"action":"spawn_plan","requestId":"${spawn.requestId}"}' "$AGENT_API_URL/v1/swarm"`,
     `2) Wait for every worker with ONE blocking execute call (timeout_seconds 300; never poll ?read=1, never sleep): curl -sS -m 295 -H "x-agent-capability: $AGENT_API_TOKEN" "$AGENT_API_URL/v1/swarm?await=workers&waitMs=280000". It returns {done, reports, pending}; only if done is false, make the same call once more.`,
-    "3) Write your summary artifact and run your verifying command in one execute call, then reply with one short summary of what each worker produced and which items await human approval before any external send.",
+    "3) Write your summary artifact (summary.md in your event dir) in one execute call, then run one separate verifying command as your final call (test -s $HOME/world/<event id>/summary.md && echo SUMMARY_OK), then reply with one short summary of what each worker produced and which items await human approval before any external send.",
   ].join("\n");
 }
 

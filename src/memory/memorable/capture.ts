@@ -101,6 +101,8 @@ export function readOnlyCommand(command: string): boolean {
   });
 }
 
+const NOT_PROCEDURE_TOOLS = new Set(["memory", "finish_silently"]);
+
 function securityTainted(entry: SessionEntry): boolean {
   return (entry.payload as { securityTainted?: unknown } | null)?.securityTainted === true;
 }
@@ -160,6 +162,9 @@ export function captureSession(sessionId: string, entries: SessionEntry[]): Memo
     if (entry.type !== "tool_call") continue;
     const payload = entry.payload as Record<string, unknown> | null;
     if (!payload || typeof payload.tool !== "string") continue;
+    // QM's own bookkeeping (the memory notebook, ending a turn quietly) is not a step of the procedure,
+    // and a trace that ends on it has no verifying command for Memorable to admit.
+    if (NOT_PROCEDURE_TOOLS.has(payload.tool)) continue;
     const { tool, callId, ...input } = payload;
     const outcome = typeof callId === "string" ? outcomes.get(callId)?.shift() : undefined;
     const isExec = tool === "execute" || (tool === "sandbox" && input.action === "exec");

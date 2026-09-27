@@ -165,6 +165,8 @@ export interface OrchestratorDeps {
    * notebooks only, so without this a procedure provider is never asked. Called with the turn's
    * task line; world-event turns use a stable line derived from the event type and standing orders.
    */
+  /** Env for world-event turns and swarm workers: the read-only GBrain proxy token (GBRAIN_PROXY_TOKEN). */
+  worldSandboxEnv?: Record<string, string>;
   procedureRecall?: (
     scopeId: import("../../types.ts").ScopeId,
     context: { query: string; actorId?: string; autonomous?: boolean; threadRef?: string },
