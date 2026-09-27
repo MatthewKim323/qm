@@ -34,7 +34,7 @@ The WorldEvent envelope is `{ id, type, ts, source, confidence?, people?, projec
 
 ## Swarm
 
-The `customer_feedback.detected` route spawns Context (who is this person and company, via GBrain), Product (similar feedback, draft issue), and Follow-up (what was promised, draft reply). Every worker is told to keep external actions as drafts; the root reports which items await human approval. Swarms need Postgres session and run stores and a sandbox backend, as described in `docs/swarms.md`.
+The `customer_feedback.detected` route spawns Context (who is this person and company, via GBrain), Product (similar feedback, draft issue), and Follow-up (what was promised, draft reply). Every worker is told to keep external actions as drafts; the root reports which items await human approval. Swarms need Postgres session and run stores, a sandbox backend, and `SANDBOX_RESOURCES_ENABLED=true`, as described in `docs/swarms.md`; without the flag every worker fails with "sandbox management is disabled".
 
 ## Verify
 
