@@ -3,17 +3,19 @@
   "type": "feature_request.detected",
   "ts": "2026-09-27T21:30:00Z",
   "source": "manual",
-  "confidence": 0.93,
-  "people": [
-    { "id": "stephen", "name": "Stephen", "enrolled": true },
-    { "id": "matthew", "name": "Matthew", "enrolled": true }
-  ],
+  "confidence": 0.91,
+  "people": [{ "id": "matthew", "name": "Matthew", "enrolled": true }],
   "project": "opal",
   "payload": {
     "product": "Opal",
-    "feature": "Add How it works section under hero",
-    "request": "Show three steps under the hero: play, Opal labels your gameplay, get paid",
-    "requested_by": "Matthew",
-    "acceptance": ["Section directly below the hero", "Three numbered steps"]
+    "feature": "Add a dark mode toggle to the landing page",
+    "request": "Matthew wants a dark mode toggle in the Opal landing page header so he can demo it at night",
+    "requested_by": "matthew",
+    "acceptance": [
+      "A toggle is visible in the landing header",
+      "Clicking it switches the page to a dark theme",
+      "The choice persists on reload"
+    ],
+    "repo": "qtzx06/opal"
   }
 }
