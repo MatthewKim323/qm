@@ -7,6 +7,23 @@ import { setTimeout as delay } from "node:timers/promises";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { Sha256 } from "@aws-crypto/sha256-js";
 
+type NativeScreenField = "childSessionId" | "parentSessionId" | "childRunId" | "mailAt" | "remainingSlots";
+
+interface NativeScreenLiteral {
+  text: string;
+  fields: Array<{ name: NativeScreenField; offset: number; from: number; length: number }>;
+}
+
+interface NativeScreenFragment {
+  id: string;
+  hook: "user_input" | "tool_response";
+  surface: NativeScreenLiteral;
+  request?: { textSha256: string; truncated: boolean };
+  chunkIndex: number;
+  chunkCount: number;
+  text: NativeScreenLiteral;
+}
+
 interface GatewayFixture {
   fixtureId: string;
   authority: string;
@@ -34,6 +51,7 @@ interface GatewayFixture {
     allowTextSha256: string[];
     denyTextSha256: string[];
     delayMs: number;
+    nativeFragments?: { provider: string; treeRunCap: number; fragments: NativeScreenFragment[] };
   };
 }
 
@@ -43,6 +61,145 @@ const equal = (actual: string | undefined, expected: string) => {
     b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 };
+
+function nativeScreenMatcher(binding: NonNullable<GatewayFixture["security"]["nativeFragments"]>) {
+  assert.deepEqual(Object.keys(binding).sort(), ["fragments", "provider", "treeRunCap"]);
+  assert.match(binding.provider, /^[a-z][a-z0-9-]{0,62}$/);
+  assert.equal(binding.provider, binding.provider.trim());
+  assert.ok(!["surface", "origin", "request", "qm"].includes(binding.provider));
+  assert.ok(Number.isSafeInteger(binding.treeRunCap) && binding.treeRunCap >= 2 && binding.treeRunCap <= 10);
+  assert.ok(binding.fragments.length > 0 && binding.fragments.length <= 10000);
+  assert.equal(new Set(binding.fragments.map((fragment) => fragment.id)).size, binding.fragments.length);
+  const uuid = [..."hhhhhhhh-hhhh-4hhh-vhhh-hhhhhhhhhhhh"].map((part) => {
+    if (part === "h") return "[a-f0-9]";
+    if (part === "v") return "[89ab]";
+    return part;
+  });
+  const date = [..."dddd-dd-ddTdd:dd:dd.dddZ"].map((part) => (part === "d" ? "[0-9]" : part.replace(".", "\\.")));
+  const patterns: Record<NativeScreenField, string[]> = {
+    childSessionId: uuid,
+    parentSessionId: uuid,
+    childRunId: uuid,
+    mailAt: date,
+    remainingSlots: [`[0-${binding.treeRunCap - 2}]`],
+  };
+  const compile = (literal: NativeScreenLiteral, limit: number) => {
+    assert.deepEqual(Object.keys(literal).sort(), ["fields", "text"]);
+    assert.ok(typeof literal.text === "string" && literal.text.length <= limit && literal.text.isWellFormed());
+    assert.ok(Array.isArray(literal.fields) && literal.fields.length <= 16);
+    let cursor = 0;
+    const pieces: string[] = [];
+    for (const field of literal.fields) {
+      assert.deepEqual(Object.keys(field).sort(), ["from", "length", "name", "offset"]);
+      assert.ok(Object.hasOwn(patterns, field.name));
+      const pattern = patterns[field.name];
+      assert.ok(Number.isSafeInteger(field.offset) && field.offset >= cursor);
+      assert.ok(Number.isSafeInteger(field.from) && field.from >= 0);
+      assert.ok(Number.isSafeInteger(field.length) && field.length > 0 && field.from + field.length <= pattern.length);
+      assert.ok(field.offset + field.length <= literal.text.length);
+      pieces.push(literal.text.slice(cursor, field.offset).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      pieces.push("(" + pattern.slice(field.from, field.from + field.length).join("") + ")");
+      cursor = field.offset + field.length;
+    }
+    pieces.push(literal.text.slice(cursor).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const regex = new RegExp("^" + pieces.join("") + "$");
+    assert.ok(regex.test(literal.text), "Native template sample must satisfy its typed fields");
+    return { regex, length: literal.text.length, fields: literal.fields.map((field) => ({ ...field })) };
+  };
+  let literalCharacters = 0;
+  const fragments = binding.fragments.map((fragment) => {
+    assert.deepEqual(Object.keys(fragment).sort(), [
+      "chunkCount",
+      "chunkIndex",
+      "hook",
+      "id",
+      ...(fragment.request ? ["request"] : []),
+      "surface",
+      "text",
+    ]);
+    assert.match(fragment.id, /^[A-Za-z0-9_.-]{1,128}$/);
+    assert.equal(fragment.id, fragment.id.trim());
+    assert.ok(["user_input", "tool_response"].includes(fragment.hook));
+    assert.ok(Number.isSafeInteger(fragment.chunkCount) && fragment.chunkCount >= 1 && fragment.chunkCount <= 12);
+    assert.ok(
+      Number.isSafeInteger(fragment.chunkIndex) &&
+        fragment.chunkIndex >= 0 &&
+        fragment.chunkIndex < fragment.chunkCount,
+    );
+    assert.equal(Boolean(fragment.request), fragment.hook === "tool_response");
+    if (fragment.request) {
+      assert.deepEqual(Object.keys(fragment.request).sort(), ["textSha256", "truncated"]);
+      assert.match(fragment.request.textSha256, /^[a-f0-9]{64}$/);
+      assert.equal(fragment.request.textSha256.length, 64);
+      assert.equal(typeof fragment.request.truncated, "boolean");
+    }
+    literalCharacters += fragment.text.text.length + fragment.surface.text.length;
+    return { ...fragment, text: compile(fragment.text, 1600), surface: compile(fragment.surface, 256) };
+  });
+  assert.ok(literalCharacters <= 16 * 1024 * 1024);
+  return (input: Record<string, unknown>) => {
+    const metadata = input.metadata as Record<string, unknown>;
+    const qm = metadata.qm as Record<string, unknown>;
+    assert.deepEqual(Object.keys(input).sort(), ["hook", "metadata", "text"]);
+    assert.deepEqual(Object.keys(qm).sort(), ["chunk_count", "chunk_index", "input_index", "request_id"]);
+    assert.equal(String(qm.request_id).length, uuid.length);
+    assert.match(String(qm.request_id), new RegExp("^" + uuid.join("") + "$"));
+    assert.deepEqual(metadata[binding.provider], qm);
+    assert.equal(metadata.origin, "automation");
+    const matches = fragments.flatMap((fragment) => {
+      if (
+        input.hook !== fragment.hook ||
+        qm.chunk_index !== fragment.chunkIndex ||
+        qm.chunk_count !== fragment.chunkCount
+      )
+        return [];
+      const keys = ["origin", "qm", binding.provider, ...(fragment.request ? ["request"] : []), "surface"].sort();
+      if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(keys)) return [];
+      if (fragment.request) {
+        const request = metadata.request as Record<string, unknown> | undefined;
+        if (!request || JSON.stringify(Object.keys(request).sort()) !== JSON.stringify(["origin", "text", "truncated"]))
+          return [];
+        if (
+          request.origin !== "automation" ||
+          typeof request.text !== "string" ||
+          request.text.length > 2000 ||
+          (request.truncated === true && request.text.length !== 2000) ||
+          sha(request.text) !== fragment.request.textSha256 ||
+          request.truncated !== fragment.request.truncated
+        )
+          return [];
+      }
+      const values = new Map<NativeScreenField, Array<string | undefined>>();
+      const fields: Array<{ name: NativeScreenField; from: number; value: string }> = [];
+      for (const [actual, literal] of [
+        [input.text, fragment.text],
+        [metadata.surface, fragment.surface],
+      ] as const) {
+        if (typeof actual !== "string" || actual.length !== literal.length) return [];
+        const match = literal.regex.exec(actual);
+        if (!match) return [];
+        for (const [index, field] of literal.fields.entries()) {
+          const value = match[index + 1]!;
+          const known = values.get(field.name) ?? Array<string | undefined>(patterns[field.name].length);
+          for (let i = 0; i < value.length; i++) {
+            if (known[field.from + i] !== undefined && known[field.from + i] !== value[i]) return [];
+            known[field.from + i] = value[i];
+          }
+          values.set(field.name, known);
+          fields.push({ name: field.name, from: field.from, value });
+        }
+      }
+      const at = values.get("mailAt");
+      if (at && Array.from(at).every((part) => part !== undefined)) {
+        const text = at.join("");
+        if (!Number.isFinite(Date.parse(text)) || new Date(text).toISOString() !== text) return [];
+      }
+      return [{ ruleId: fragment.id, textSha256: sha(String(input.text)), fields, reconstructionRequired: true }];
+    });
+    assert.equal(matches.length, 1, "One exact native security fragment required");
+    return matches[0];
+  };
+}
 
 export function createGatewayFixture(profile: GatewayFixture, record: (row: Record<string, unknown>) => void) {
   assert.match(profile.fixtureId, /^[a-zA-Z0-9_.-]+$/);
@@ -94,6 +251,9 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
       profile.security.delayMs >= 0 &&
       profile.security.delayMs <= 60000,
   );
+  const matchNative = profile.security.nativeFragments
+    ? nativeScreenMatcher(profile.security.nativeFragments)
+    : undefined;
   const signer = new SignatureV4({
     service: "execute-api",
     region: profile.region,
@@ -149,7 +309,11 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
         assert.ok(Number.isSafeInteger(qm.chunk_count) && qm.chunk_count > 0 && qm.chunk_count <= 12);
         assert.ok(Number.isSafeInteger(qm.chunk_index) && qm.chunk_index >= 0 && qm.chunk_index < qm.chunk_count);
         const digest = sha(input.text);
-        assert.ok(allow.has(digest) || deny.has(digest), "Unrecognized synthetic security text");
+        if (!allow.has(digest) && !deny.has(digest)) {
+          assert.ok(matchNative, "Unrecognized synthetic security text");
+          assert.ok(Buffer.from(JSON.stringify(input)).equals(bytes), "Canonical native security JSON required");
+          evidence.nativeScreen = matchNative(input);
+        }
         verified = true;
         Object.assign(evidence, {
           hook: input.hook,

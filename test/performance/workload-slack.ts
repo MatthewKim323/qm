@@ -203,12 +203,31 @@ export function createSlackResponder(
       let requestBytes = 0;
       let requestSha256: string | undefined;
       let responseBytes = 0;
+      let responseSha256: string | undefined;
+      let completed = false;
+      let aborted = false;
       let error: string | null = null;
       let args: Record<string, unknown> = {};
       active++;
+      const terminal = new Promise<void>((resolve) => {
+        res.once("finish", () => {
+          completed = true;
+          resolve();
+        });
+        res.once("close", () => {
+          aborted = !completed;
+          resolve();
+        });
+        res.once("error", () => {
+          aborted = true;
+          resolve();
+        });
+      });
       const reply = (status: number, body: unknown) => {
+        if (res.destroyed) return;
         const bytes = JSON.stringify(body);
         responseBytes = Buffer.byteLength(bytes);
+        responseSha256 = hash(bytes);
         res.writeHead(status, { "content-type": "application/json" });
         res.end(bytes);
       };
@@ -236,6 +255,7 @@ export function createSlackResponder(
         error = e instanceof Error ? e.message.split("\n")[0]! : String(e);
         reply(400, { ok: false, error: "fixture_rejected" });
       } finally {
+        await terminal;
         active--;
         emit({
           schemaVersion: 1,
@@ -248,6 +268,10 @@ export function createSlackResponder(
           requestBytes,
           requestSha256,
           responseBytes,
+          responseSha256,
+          status: res.headersSent ? res.statusCode : null,
+          completed,
+          aborted,
           channel: args.channel,
           textSha256: typeof args.text === "string" ? hash(args.text) : undefined,
           textBytes: typeof args.text === "string" ? Buffer.byteLength(args.text) : undefined,

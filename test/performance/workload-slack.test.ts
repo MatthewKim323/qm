@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { connect } from "node:net";
 import test from "node:test";
+import { setTimeout } from "node:timers/promises";
 import { WebClient } from "@slack/web-api";
 import { channelThreadRef, parseSlackThreadRef } from "../../src/slack/message-gating.ts";
 import { createDirectory } from "../../src/slack/directory.ts";
@@ -118,8 +121,71 @@ test("installed Slack client preserves complete channel/group rosters and delive
     assert.equal((await client.auth.test()).team_id, profile.teamId);
     assert.equal(records.filter((r) => r.error !== null).length, 7);
     assert.ok(records.every((r) => r.qualified === false));
+    assert.ok(records.every((r) => r.completed === true && r.aborted === false));
+    assert.ok(records.every((r) => Number(r.finishedAt) >= Number(r.startedAt)));
+    assert.ok(records.every((r) => r.status === (r.error === null ? 200 : 400)));
+    assert.ok(records.every((r) => /^[a-f0-9]{64}$/.test(String(r.responseSha256))));
     assert.ok(!JSON.stringify(records).includes(token));
   } finally {
+    await responder.close();
+  }
+});
+
+test("Slack evidence follows native response completion and preserves an interrupted request", async () => {
+  const records: Record<string, unknown>[] = [];
+  let responseFinished = false;
+  const responder = createSlackResponder(
+    profile,
+    fixture,
+    (record) => records.push({ ...record, nativeFinishedAtReceipt: responseFinished }),
+    { QM_PERF_SLACK_TEST_TOKEN: token },
+  );
+  responder.server.on("request", (_request, response) => {
+    responseFinished = false;
+    response.once("finish", () => {
+      responseFinished = true;
+    });
+  });
+  responder.server.listen(0, "127.0.0.1");
+  await once(responder.server, "listening");
+  const address = responder.server.address();
+  assert.ok(address && typeof address !== "string");
+  const url = `http://127.0.0.1:${address.port}`;
+  const socket = connect(address.port, "127.0.0.1");
+  try {
+    const identity = await fetch(url + "/__qm_perf/identity");
+    const bytes = await identity.text();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]!.responseBytes, Buffer.byteLength(bytes));
+    assert.equal(records[0]!.responseSha256, createHash("sha256").update(bytes).digest("hex"));
+    assert.equal(records[0]!.completed, true);
+    assert.equal(records[0]!.nativeFinishedAtReceipt, true);
+    const received = once(responder.server, "request");
+    if (socket.connecting) await once(socket, "connect");
+    const body = JSON.stringify({ channel: "DPERF000001" });
+    socket.write(
+      `POST /api/conversations.history HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body.slice(0, 2)}`,
+    );
+    const [, response] = await received;
+    assert.equal(response.writableFinished, false);
+    assert.equal(records.length, 1);
+    const closed = once(response, "close");
+    socket.destroy();
+    await closed;
+    await setTimeout(0);
+    assert.equal(records.length, 2);
+    const interrupted = records[1]!;
+    assert.equal(interrupted.status, null);
+    assert.equal(interrupted.completed, false);
+    assert.equal(interrupted.aborted, true);
+    assert.equal(interrupted.nativeFinishedAtReceipt, false);
+    assert.equal(typeof interrupted.error, "string");
+    assert.equal(interrupted.active, 0);
+    assert.equal(interrupted.responseBytes, 0);
+    assert.equal(interrupted.responseSha256, undefined);
+    assert.ok(!JSON.stringify(records).includes(token));
+  } finally {
+    socket.destroy();
     await responder.close();
   }
 });

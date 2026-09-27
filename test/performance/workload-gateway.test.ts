@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -51,6 +51,7 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const rows: Record<string, unknown>[] = [];
+  const nativeReceipts = Promise.withResolvers<void>();
   const partialReceipt = Promise.withResolvers<Record<string, unknown>>();
   const timeoutReceipt = Promise.withResolvers<Record<string, unknown>>();
   let partialSha256 = "",
@@ -62,6 +63,62 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
   const hash = (text: string) => createHash("sha256").update(text).digest("hex");
   const payload = "a".repeat(4000),
     denied = "qm-perf-denied-input";
+  const childId = randomUUID(),
+    runId = randomUUID(),
+    stamp = "2026-09-27T00:00:00.123Z";
+  const nativeText = "known-child:" + "x".repeat(1560) + childId + ":" + stamp + ":8:" + childId;
+  const nativeSurface = "session_message_subagent-mail-" + runId;
+  const nativeBodies: Array<Record<string, any>> = [];
+  const capture = createSecurityScreenProxy({
+    provider: "fixture",
+    endpoint: "https://fixture.invalid/security-screen",
+    token: "qm-perf-capture-token-only",
+    timeoutMs: 1000,
+    shadow: false,
+    fetch: (async (_, init) => {
+      nativeBodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ score: 0.1, threshold: 0.5 });
+    }) as typeof fetch,
+  });
+  await capture.classify({
+    payload: nativeText,
+    hook: "tool_response",
+    metadata: {
+      surface: nativeSurface,
+      origin: "automation",
+      request: { origin: "automation", text: "exact parent task", truncated: false },
+    },
+  });
+  const fragments: NonNullable<Parameters<typeof createGatewayFixture>[0]["security"]["nativeFragments"]>["fragments"] =
+    [];
+  let offset = 0;
+  for (const [index, body] of nativeBodies.entries()) {
+    const fields: (typeof fragments)[number]["text"]["fields"] = [];
+    for (const [name, value, starts] of [
+      ["childSessionId", childId, [nativeText.indexOf(childId), nativeText.lastIndexOf(childId)]],
+      ["mailAt", stamp, [nativeText.indexOf(stamp)]],
+      ["remainingSlots", "8", [nativeText.indexOf(":8:") + 1]],
+    ] as const)
+      for (const start of starts) {
+        const lo = Math.max(start, offset),
+          hi = Math.min(start + value.length, offset + body.text.length);
+        if (lo < hi) fields.push({ name, offset: lo - offset, from: lo - start, length: hi - lo });
+      }
+    fields.sort((a, b) => a.offset - b.offset);
+    fragments.push({
+      id: "child-" + index,
+      hook: "tool_response",
+      chunkIndex: index,
+      chunkCount: nativeBodies.length,
+      surface: {
+        text: nativeSurface,
+        fields: [{ name: "childRunId", offset: nativeSurface.indexOf(runId), from: 0, length: 36 }],
+      },
+      request: { textSha256: hash("exact parent task"), truncated: false },
+      text: { text: body.text, fields },
+    });
+    offset += body.text.length - 256;
+  }
   const profile = {
     fixtureId: "gateway-test",
     authority: "fixture.test",
@@ -91,10 +148,12 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
       allowTextSha256: [hash("a".repeat(1600)), hash("a".repeat(1312))],
       denyTextSha256: [hash(denied)],
       delayMs: 1,
+      nativeFragments: { provider: "fixture", treeRunCap: 10, fragments },
     },
   };
   const gateway = createGatewayFixture(profile, (row) => {
     rows.push(row);
+    if (rows.filter((value) => value.nativeScreen).length === nativeBodies.length) nativeReceipts.resolve();
     if (row.requestId === "qm-perf-cancelled") cancelled(row);
     if (row.bodySha256 === partialSha256) partialReceipt.resolve(row);
     if (row.bodySha256 === timeoutSha256) timeoutReceipt.resolve(row);
@@ -248,6 +307,148 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
         [2, 3, "auto", true],
       ],
     );
+    assert.ok(fragments[0]!.text.fields.some((field) => field.name === "childSessionId" && field.length < 36));
+    assert.equal(
+      (
+        await native.classify({
+          payload: nativeText,
+          hook: "tool_response",
+          metadata: {
+            surface: nativeSurface,
+            origin: "automation",
+            request: { origin: "automation", text: "exact parent task", truncated: false },
+          },
+        })
+      ).verdict.decision,
+      "auto",
+    );
+    await Promise.race([
+      nativeReceipts.promise,
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("Missing native fragment receipts")), 2000);
+        timer.unref();
+      }),
+    ]);
+    const dynamicRows = rows.filter((row) => row.nativeScreen);
+    assert.equal(dynamicRows.length, 2);
+    assert.ok(dynamicRows.every((row) => (row.nativeScreen as any).reconstructionRequired === true));
+    assert.ok(!JSON.stringify(dynamicRows).includes("exact parent task"));
+    const sendScreen = async (body: string) => {
+      const response = await request(url + "/security-screen", {
+        method: "POST",
+        headers: { "x-api-key": profile.security.token },
+        body,
+        dispatcher: agent,
+      });
+      await response.body?.cancel();
+      return response.status;
+    };
+    const nativeBody = nativeBodies[1]!;
+    const changed = (modify: (value: Record<string, any>) => void) => {
+      const copy = structuredClone(nativeBody);
+      modify(copy);
+      return JSON.stringify(copy);
+    };
+    for (const mutate of [
+      (value: Record<string, any>) => {
+        value.text += "\n";
+      },
+      (value: Record<string, any>) => {
+        value.text = value.text.replace(childId, childId.toUpperCase());
+      },
+      (value: Record<string, any>) => {
+        value.text = value.text.replace(stamp, "2026-02-31T00:00:00.123Z");
+      },
+      (value: Record<string, any>) => {
+        value.text = value.text.replace(":8:", ":9:");
+      },
+      (value: Record<string, any>) => {
+        value.text = value.text.replace(childId, randomUUID());
+      },
+      (value: Record<string, any>) => {
+        value.text = "!" + value.text.slice(1);
+      },
+      (value: Record<string, any>) => {
+        value.hook = "user_input";
+      },
+      (value: Record<string, any>) => {
+        value.metadata.origin = "direct";
+      },
+      (value: Record<string, any>) => {
+        value.metadata.extra = true;
+      },
+      (value: Record<string, any>) => {
+        value.metadata.request.text += "!";
+      },
+      (value: Record<string, any>) => {
+        value.metadata.request.truncated = true;
+      },
+      (value: Record<string, any>) => {
+        value.metadata.request.origin = "direct";
+      },
+      (value: Record<string, any>) => {
+        value.metadata.fixture.chunk_index = 0;
+      },
+      (value: Record<string, any>) => {
+        value.metadata.qm.request_id = "not-a-native-uuid";
+        value.metadata.fixture.request_id = "not-a-native-uuid";
+      },
+      (value: Record<string, any>) => {
+        value.metadata.qm.request_id += "\n";
+        value.metadata.fixture.request_id += "\n";
+      },
+      (value: Record<string, any>) => {
+        delete value.metadata.request;
+      },
+    ])
+      assert.equal(await sendScreen(changed(mutate)), 400);
+    assert.equal(await sendScreen(JSON.stringify(nativeBody) + " "), 400);
+    assert.equal(await sendScreen(JSON.stringify(nativeBody).replace('{"text":', '{"text":"ignored","text":')), 400);
+    const duplicate = {
+      ...profile,
+      security: {
+        ...profile.security,
+        nativeFragments: {
+          ...profile.security.nativeFragments,
+          fragments: [...fragments, { ...fragments[0]!, id: "ambiguous" }],
+        },
+      },
+    };
+    const ambiguous = createGatewayFixture(duplicate, () => {});
+    await new Promise<void>((resolve) => ambiguous.listen(0, "127.0.0.1", resolve));
+    try {
+      const response = await request(`https://127.0.0.1:${(ambiguous.address() as AddressInfo).port}/security-screen`, {
+        method: "POST",
+        headers: { host: profile.authority, "x-api-key": profile.security.token },
+        body: JSON.stringify(nativeBodies[0]),
+        dispatcher: agent,
+      });
+      assert.equal(response.status, 400);
+      await response.body?.cancel();
+    } finally {
+      await new Promise<void>((resolve) => ambiguous.close(() => resolve()));
+    }
+    for (const mutate of [
+      (value: typeof profile) => {
+        value.security.nativeFragments.fragments[0]!.hook = "user_input";
+      },
+      (value: typeof profile) => {
+        value.security.nativeFragments.treeRunCap = 11;
+      },
+      (value: typeof profile) => {
+        value.security.nativeFragments.fragments[0]!.text.fields[0]!.from = 36;
+      },
+      (value: typeof profile) => {
+        value.security.nativeFragments.fragments[0]!.chunkCount = 13;
+      },
+      (value: typeof profile) => {
+        value.security.nativeFragments.fragments[0]!.text.fields[0]!.offset = -1;
+      },
+    ]) {
+      const copy = { ...profile, security: structuredClone(profile.security) };
+      mutate(copy);
+      assert.throws(() => createGatewayFixture(copy, () => {}));
+    }
     profile.security.delayMs = 200;
     const aborted = new AbortController();
     const pending = native.classify({
