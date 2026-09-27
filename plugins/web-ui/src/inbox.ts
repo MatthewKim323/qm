@@ -468,7 +468,7 @@ export async function refreshInbox(
     return;
   resyncMissedWhileHidden = false;
   inboxState.loading = true;
-  if (!opts.silent) drawAll();
+  if (!opts.silent || inboxState.loaded) drawAll();
   try {
     type Feed = {
       migrationPending: boolean;

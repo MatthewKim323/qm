@@ -134,6 +134,21 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   );
   assert.equal(filterSelect().value, "triaged");
   assert.deepEqual(titles(), ["Please review the launch plan"]);
+  const fetchInbox = globalThis.fetch;
+  let resumeRefresh!: () => void;
+  const refreshGate = new Promise<void>((resolve) => {
+    resumeRefresh = resolve;
+  });
+  globalThis.fetch = async (input, options) => {
+    await refreshGate;
+    return fetchInbox(input, options);
+  };
+  const backgroundRefresh = refreshInbox({ silent: true });
+  assert.equal(filterSelect().disabled, true);
+  resumeRefresh();
+  await backgroundRefresh;
+  globalThis.fetch = fetchInbox;
+  assert.equal(filterSelect().disabled, false);
   chooseFilter("human");
   await settled();
   assertTabCounts();
