@@ -10685,6 +10685,22 @@ h3.ambient-field-label {
   background: var(--muted);
 }
 
+.inbox-resolved-sect {
+  margin-top: 10px;
+}
+.inbox-resolved-head {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary, #8a8a8a);
+  padding: 6px 10px 4px;
+  border-top: 1px solid var(--border, #e5e5e5);
+}
+.inbox-resolved-list .inbox-item {
+  opacity: 0.62;
+}
+.inbox-resolved-list .inbox-item.expanded {
+  opacity: 1;
+}
 .inbox-images {
   display: flex;
   gap: 6px;

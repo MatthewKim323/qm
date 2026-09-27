@@ -355,8 +355,9 @@ export function itemsFor(viewId: string, status: "open" | "handled"): InboxItem[
       if (inboxState.filter === "all") return true;
       if (item.automated) return false;
       if (inboxState.filter === "human") return true;
+      if (item.probablyResolved) return false;
     }
-    return item.attention !== false && !item.probablyResolved;
+    return item.attention !== false;
   });
 }
 
@@ -1556,7 +1557,9 @@ function syncLineTpl(surface: InboxSurface): TemplateResult | typeof nothing {
 function surfaceTpl(surface: InboxSurface): TemplateResult {
   const density = surface.density();
   const compact = density !== "full";
-  const openItems = itemsFor(surface.viewId, "open");
+  const allOpen = itemsFor(surface.viewId, "open");
+  const resolvedItems = allOpen.filter((item) => item.source !== "gmail" && item.probablyResolved);
+  const openItems = allOpen.filter((item) => item.source === "gmail" || !item.probablyResolved);
   const selectedLoop = inboxState.selected.find((loop) => loop.id === surface.viewId);
   const showEmailFilter =
     surface.viewId === "all" ||
@@ -1648,6 +1651,14 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
         : nothing
     }
     <div class="inbox-list">${openItems.map((i) => itemRowTpl(surface, i))}</div>
+    ${
+      resolvedItems.length
+        ? html`<div class="inbox-resolved-sect">
+            <div class="inbox-resolved-head">Probably resolved · no reply likely needed</div>
+            <div class="inbox-list inbox-resolved-list">${resolvedItems.map((i) => itemRowTpl(surface, i))}</div>
+          </div>`
+        : nothing
+    }
     ${
       handledItems.length
         ? html`

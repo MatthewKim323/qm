@@ -61,7 +61,7 @@ async function inbox(ctx: ApiCtx): Promise<void> {
       .filter((item) => !isResolved(item) && (item.source ?? item.sourcePayload?.source) === "gmail");
     await ctx.deps.inboxSourceRefresh(acting.actorId, mail);
   }
-  const summaries = (await deps.items.summaries(selectedIds)).filter(
+  const summaries = (await deps.items.summaries(selectedIds, { includeEmailClassification: true })).filter(
     (item) => selectedIds.includes(item.loopId) && item.inboxPreview?.sentChat !== true,
   );
   const itemId = ctx.url.searchParams.get("itemId");
@@ -87,11 +87,9 @@ async function inbox(ctx: ApiCtx): Promise<void> {
       if (inboxFilter === "all") return true;
       if (item.inboxPreview?.automated === true) return false;
       if (inboxFilter === "human") return true;
+      if (item.inboxPreview?.probablyResolved === true) return false;
     }
-    return (
-      item.inboxPreview?.probablyResolved !== true &&
-      (item.status === "ready" || (item.status === "failed" && Boolean(item.parkedReason)))
-    );
+    return item.status === "ready" || (item.status === "failed" && Boolean(item.parkedReason));
   });
   const counts = new Map<string, number>();
   for (const item of open) counts.set(item.loopId, (counts.get(item.loopId) ?? 0) + 1);

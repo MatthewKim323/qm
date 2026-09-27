@@ -246,9 +246,9 @@ test("email filters appear only on email views and leave other sources unchanged
     ["all", ["email-ready", "email-resolved", "email-automated"]],
   ] as const) {
     inboxState.filter = filter;
-    assert.deepEqual(ids("all"), [...emails, "slack-ready", "slack-bot"]);
+    assert.deepEqual(ids("all"), [...emails, "slack-ready", "slack-bot", "slack-resolved"]);
     assert.deepEqual(ids("email"), emails);
-    assert.deepEqual(ids("chat"), ["slack-ready", "slack-bot"]);
+    assert.deepEqual(ids("chat"), ["slack-ready", "slack-bot", "slack-resolved"]);
     assert.deepEqual(ids("custom"), []);
     for (const viewId of ["all", "gmail", "email", "empty-email", "mixed"]) {
       mount({ viewId });
@@ -258,6 +258,11 @@ test("email filters appear only on email views and leave other sources unchanged
     for (const viewId of ["slack", "chat", "custom", "sent"]) {
       mount({ viewId });
       assert.equal(host.querySelector(".inbox-filter"), null);
+      if (viewId === "slack" || viewId === "chat") {
+        assert.equal(host.querySelectorAll(".inbox-resolved-list .inbox-item").length, 1);
+        assert.match(host.querySelector(".inbox-resolved-head")!.textContent!, /Probably resolved/);
+        assert.equal(host.querySelectorAll(".inbox-list:not(.inbox-resolved-list) .inbox-item").length, 2);
+      }
       assert.doesNotMatch(host.querySelector(".inbox-zero")?.textContent ?? "", /Choose From people/);
     }
   }

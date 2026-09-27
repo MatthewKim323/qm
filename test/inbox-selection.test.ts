@@ -460,7 +460,7 @@ test("email filters leave Slack unchanged while source counts include all open c
   const keys = (feed: any) => feed.items.map((item: any) => item.dedupeKey).sort();
   const triaged = (await w.call()).data;
   assert.equal(triaged.filter, "triaged");
-  assert.deepEqual(keys(triaged), ["question", "slack-bot", "slack-question"]);
+  assert.deepEqual(keys(triaged), ["question", "slack-bot", "slack-question", "slack-resolved"]);
   assert.equal(triaged.total, 8);
   const sourceCounts = (feed: any) => feed.selected.map((loop: any) => [loop.id, loop.count]);
   assert.deepEqual(sourceCounts(triaged), [
@@ -468,8 +468,8 @@ test("email filters leave Slack unchanged while source counts include all open c
     [slack!.id, 4],
   ]);
   for (const [filter, expected] of [
-    ["human", ["pending", "question", "slack-bot", "slack-question", "thanks"]],
-    ["all", ["pending", "question", "receipt", "slack-bot", "slack-question", "thanks"]],
+    ["human", ["pending", "question", "slack-bot", "slack-question", "slack-resolved", "thanks"]],
+    ["all", ["pending", "question", "receipt", "slack-bot", "slack-question", "slack-resolved", "thanks"]],
   ] as const) {
     await w.uiState.put(uiStateId("alice", "inbox-filter"), { value: filter, updatedAt: Date.now() });
     const feed = (await w.call()).data;
@@ -481,7 +481,11 @@ test("email filters leave Slack unchanged while source counts include all open c
       feed.selected.reduce((sum: number, loop: any) => sum + loop.count, 0),
       8,
     );
-    assert.deepEqual(keys((await w.call("GET", null, `loopId=${slack!.id}`)).data), ["slack-bot", "slack-question"]);
+    assert.deepEqual(keys((await w.call("GET", null, `loopId=${slack!.id}`)).data), [
+      "slack-bot",
+      "slack-question",
+      "slack-resolved",
+    ]);
     assert.deepEqual(keys((await w.call("GET", null, "view=handled")).data), ["handled"]);
     assert.deepEqual(
       keys((await w.call("GET", null, `loopId=${email!.id}`)).data),
@@ -563,4 +567,33 @@ test("legacy source metadata survives an empty filtered email view", async () =>
   const feed = (await w.call()).data;
   assert.equal(feed.items.length, 0);
   assert.deepEqual(feed.selected[0].sources, ["gmail"]);
+});
+
+test("email classification is projected only by the flagged inbox endpoint", async (t) => {
+  const w = world();
+  const [loop] = await ensureDefaultInboxLoops(w.deps.store, "alice");
+  await w.deps.items.ingest([
+    {
+      loopId: loop!.id,
+      dedupeKey: "receipt",
+      source: "gmail",
+      sourcePayload: { automated: true, privateDetail: "hidden" },
+    },
+  ]);
+  const [before] = await w.deps.items.summaries([loop!.id]);
+  assert.equal(before!.inboxPreview!.automated, undefined);
+  const feed = (await w.call("GET", null, "filter=all")).data;
+  assert.equal(feed.items[0].sourcePayload.automated, true);
+  assert.equal(feed.items[0].sourcePayload.privateDetail, undefined);
+  assert.deepEqual((await w.deps.items.summaries([loop!.id]))[0], before);
+  const disabled = world(false);
+  t.mock.method(disabled.deps.items, "byLoop", async () => {
+    assert.fail("flag-disabled inbox read payloads");
+  });
+  t.mock.method(disabled.deps.items, "summaries", async () => {
+    assert.fail("flag-disabled inbox read summaries");
+  });
+  for (const filter of ["all", "human", "triaged"]) {
+    assert.equal((await disabled.call("GET", null, `filter=${filter}`)).status, 403);
+  }
 });

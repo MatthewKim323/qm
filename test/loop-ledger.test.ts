@@ -1,3 +1,5 @@
+import { createMemoryMap, type DurableMapSelect } from "../src/persistence/durable-map.ts";
+import type { LoopItem } from "../src/types.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentDraftOf, createLoopItemLedger, loopItemId, type IngestEntryInput } from "../src/loops/item-ledger.ts";
@@ -382,4 +384,37 @@ test("continuing a sent reply clears the old draft without losing chat or allowi
   const ordinary = (await ledger.byLoop(LOOP)).find((item) => item.sourceKey === "ordinary")!;
   await ledger.recordAction(ordinary.id, { kind: "send", outcome: "actioned" });
   assert.equal(await ledger.reopen(ordinary.id, { sentReply: true }), null);
+});
+
+test("email classification projection is opt-in, scoped, and never changes stored previews", async (t) => {
+  const backing = createMemoryMap<LoopItem>();
+  const ledger = createLoopItemLedger(backing);
+  await ledger.ingest([
+    entry({
+      sourcePayload: { automated: true, privateDetail: "hidden" },
+      proposal: { by: "agent", data: { body: "Draft" } },
+    }),
+    entry({ loopId: "unselected", sourcePayload: { automated: true } }),
+  ]);
+  const stored = structuredClone(await ledger.get(loopItemId(LOOP, "gmail:thread-1")));
+  t.mock.method(backing, "all", async () => {
+    assert.fail("summaries must not scan the full ledger");
+  });
+  const originalSelect = backing.select.bind(backing);
+  t.mock.method(backing, "select", async (query: DurableMapSelect<LoopItem, keyof LoopItem>) => {
+    assert.deepEqual(query.where, { field: "loopId", anyOfFold: [LOOP] });
+    assert.ok(query.omit?.includes("proposal"));
+    assert.ok(query.omit?.includes("thread"));
+    return originalSelect(query);
+  });
+  const before = await ledger.summaries([LOOP]);
+  assert.equal(before.length, 1);
+  assert.equal(before[0]!.inboxPreview!.automated, undefined);
+  const classified = await ledger.summaries([LOOP], { includeEmailClassification: true });
+  assert.equal(classified.length, 1);
+  assert.equal(classified[0]!.inboxPreview!.automated, true);
+  assert.equal(classified[0]!.inboxPreview!.privateDetail, undefined);
+  for (const key of ["sourcePayload", "proposal", "thread", "agentDrafts"]) assert.ok(!(key in classified[0]!));
+  assert.deepEqual(await ledger.summaries([LOOP]), before);
+  assert.deepEqual(await ledger.get(loopItemId(LOOP, "gmail:thread-1")), stored);
 });
