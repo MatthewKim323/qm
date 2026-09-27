@@ -174,7 +174,7 @@ import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
 import { createWorldHookReceiver, type WorldHookReceiver } from "./worldhooks/world-hook-receiver.ts";
-import { createWorldSwarmTracker } from "./worldhooks/world-swarm-tracker.ts";
+import { createWorldSwarmTracker, type WorldRunReport } from "./worldhooks/world-swarm-tracker.ts";
 import { createWorldWatchStore, type WorldWatch } from "./worldhooks/world-watches.ts";
 import { createWorldEntityStore, type WorldEntity } from "./worldhooks/world-entities.ts";
 import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./deploy/deploy-store.ts";
@@ -2517,6 +2517,7 @@ export function buildApp(
               tracker: createWorldSwarmTracker({
                 q: (text, params) => pgArtifactMap.pool.q(text, params),
                 memory: baseMemory,
+                store: artifactMap<WorldRunReport>("world_runs"),
                 ...(config.worldHudUrl ? { hudUrl: config.worldHudUrl } : {}),
               }),
             }

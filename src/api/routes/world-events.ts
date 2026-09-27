@@ -95,7 +95,7 @@ async function listEntities(ctx: BaseCtx): Promise<void> {
 async function listRuns(ctx: BaseCtx): Promise<void> {
   const a = await authed(ctx);
   if (!a) return;
-  return sendJson(ctx.res, 200, { runs: ctx.deps.worldHooks!.tracker?.reports() ?? [] });
+  return sendJson(ctx.res, 200, { runs: (await ctx.deps.worldHooks!.tracker?.reports()) ?? [] });
 }
 
 export const worldEventRawRoutes: ReadonlyArray<Route<BaseCtx>> = [

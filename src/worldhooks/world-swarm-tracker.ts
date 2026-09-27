@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { MemoryService } from "../memory/memory-service.ts";
+import type { DurableMap } from "../persistence/durable-map.ts";
 import type { ScopeId } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
 
@@ -71,6 +72,8 @@ export interface WorldSwarmTrackerDeps {
   quietMs?: number;
   maxMs?: number;
   log?: (line: string) => void;
+  /** Durable run reports, so the run 1 vs run 2 comparison survives a restart. */
+  store?: DurableMap<WorldRunReport>;
 }
 
 export interface TrackRequest {
@@ -310,8 +313,12 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
       captured,
       ...(captureError ? { captureError } : {}),
     };
-    const baseline = [...reports].reverse().find((r) => r.type === req.type && r.recalled.length === 0);
+    const history = deps.store ? (await deps.store.all()).sort((a, b) => a.finishedAt - b.finishedAt) : reports;
+    const baseline = [...history].reverse().find((r) => r.type === req.type && r.recalled.length === 0);
     reports.push(report);
+    await deps.store
+      ?.put(req.fireKey, report)
+      .catch((e: unknown) => log(`[worldhooks] run report not saved: ${errMessage(e)}`));
     log(
       `[worldhooks] ${req.fireKey} complete turns=${total.turns} toolCalls=${total.toolCalls} toolErrors=${total.toolErrors} wall=${fmtS(total.wallMs)} recalled=${recalled.length} captured=${captured}`,
     );
@@ -323,7 +330,12 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
     return report;
   }
 
-  return { track, reports: () => [...reports] };
+  async function allReports(): Promise<WorldRunReport[]> {
+    if (!deps.store) return [...reports];
+    return (await deps.store.all()).sort((a, b) => a.finishedAt - b.finishedAt);
+  }
+
+  return { track, reports: allReports };
 }
 
 export type WorldSwarmTracker = ReturnType<typeof createWorldSwarmTracker>;
