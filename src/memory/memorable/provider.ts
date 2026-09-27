@@ -4,6 +4,7 @@ import { captureSession, type MemorableCapture, type MemorableToolCall } from ".
 import { memorableInject } from "./inject.ts";
 import { relayRecord } from "./relay.ts";
 import { memorableEvents } from "../../worldhooks/world-swarm-tracker.ts";
+import { refineWorldRecall } from "../../worldhooks/world-recall.ts";
 
 export interface MemorableProviderDeps {
   argv: readonly string[];
@@ -16,6 +17,8 @@ export interface MemorableProviderDeps {
   recordTimeoutMs?: number;
   inject?: typeof memorableInject;
   relay?: typeof relayRecord;
+  /** Turns a Memorable hit on a world task into an action checklist; undefined keeps Memorable's block. */
+  refine?: typeof refineWorldRecall;
 }
 
 function maskInput(input: Record<string, unknown>, mask: (text: string) => string): Record<string, unknown> {
@@ -53,6 +56,7 @@ function redactCapture(capture: MemorableCapture, mask: (text: string) => string
 export function createMemorableMemoryProvider(deps: MemorableProviderDeps): MemoryService {
   const inject = deps.inject ?? memorableInject;
   const relay = deps.relay ?? relayRecord;
+  const refine = deps.refine ?? refineWorldRecall;
   const mask = deps.mask ?? ((text: string) => text);
   const spawnOpts = { env: deps.env };
 
@@ -61,11 +65,25 @@ export function createMemorableMemoryProvider(deps: MemorableProviderDeps): Memo
       const task = context?.query?.trim();
       if (!task) return "";
       const block = await inject(deps.argv, scopeId, task, spawnOpts, deps.injectTimeoutMs);
-      if (block) {
-        console.log(`[memorable] recall hit scope=${scopeId} chars=${block.length}`);
-        memorableEvents.emit("recall", { scopeId, task, block });
-      }
-      return block ?? "";
+      if (!block) return "";
+      const refined = await refine(scopeId, task, block).catch((e: unknown) => {
+        console.log(`[memorable] world recall refine failed: ${e instanceof Error ? e.message : String(e)}`);
+        return undefined;
+      });
+      const out = refined?.block ?? block;
+      console.log(
+        `[memorable] recall hit scope=${scopeId} chars=${out.length}${refined ? ` checklist="${refined.title}" steps=${refined.steps} skip=${refined.skipped}` : ""}`,
+      );
+      memorableEvents.emit("recall", {
+        scopeId,
+        task,
+        block: out,
+        ...(context?.threadRef ? { threadRef: context.threadRef } : {}),
+        ...(refined
+          ? { title: refined.title, steps: refined.steps, slug: refined.slug, procedure: refined.procedure }
+          : {}),
+      });
+      return out;
     },
 
     async capture(scopeId: ScopeId, _facts, _at, _author, context) {

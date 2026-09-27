@@ -167,7 +167,7 @@ export interface OrchestratorDeps {
    */
   procedureRecall?: (
     scopeId: import("../../types.ts").ScopeId,
-    context: { query: string; actorId?: string; autonomous?: boolean },
+    context: { query: string; actorId?: string; autonomous?: boolean; threadRef?: string },
   ) => Promise<string>;
   skills?: SkillStore;
   skillBundles?: SkillBundleStore;

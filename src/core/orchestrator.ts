@@ -1098,7 +1098,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const task = procedureTaskLine(input.text);
         if (task) {
           const procedure = await deps
-            .procedureRecall(memoryScopeId, { query: task, actorId: actor.id, autonomous: automatedTurn })
+            .procedureRecall(memoryScopeId, {
+              query: task,
+              actorId: actor.id,
+              autonomous: automatedTurn,
+              threadRef: input.conversation.threadRef,
+            })
             .catch(swallowAs("procedure recall", ""));
           if (procedure.trim()) recalled = [recalled, procedure.trim()].filter(Boolean).join("\n\n");
         }

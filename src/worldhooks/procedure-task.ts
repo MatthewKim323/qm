@@ -42,9 +42,30 @@ export function worldEventTaskLine(text: string): string | undefined {
     .trim();
 }
 
+/**
+ * A world swarm worker's first turn: the swarm header (message and agent ids) and the event id vary
+ * per run; the role, its brief, the event type and the product stay the same.
+ */
+export function worldWorkerTaskLine(text: string): string | undefined {
+  const role =
+    /Your swarm role: ([^\n.]{1,80})\. Brief from your spawn context:\n([\s\S]*?)\n\nWorld event (\S+) \(([a-z0-9_.]+)\)/.exec(
+      text,
+    );
+  if (!role) return undefined;
+  const [, label, brief, eventId, type] = role;
+  const payload = /<world-event-json>([\s\S]*?)<\/world-event-json>/.exec(text)?.[1] ?? "";
+  const product = /"product":\s*"([^"]{1,60})"/.exec(payload)?.[1];
+  const feature = /"feature":\s*"([^"]{1,80})"/.exec(payload)?.[1];
+  const subject = [product, feature].filter(Boolean).join(" ");
+  const stableBrief = brief!.split(eventId!).join("<event id>").replace(/\s+/g, " ");
+  return `World swarm worker ${label} for ${type}${subject ? ` about ${subject}` : ""}: ${stableBrief}`
+    .slice(0, MAX_TASK_CHARS)
+    .trim();
+}
+
 export function procedureTaskLine(text: string | undefined): string | undefined {
   if (!text?.trim()) return undefined;
-  const world = worldEventTaskLine(text);
+  const world = worldEventTaskLine(text) ?? worldWorkerTaskLine(text);
   if (world) return world;
   return text.replace(/\s+/g, " ").trim().slice(0, MAX_TASK_CHARS);
 }

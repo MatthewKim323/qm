@@ -32,6 +32,8 @@ export interface MemoryRecallContext {
   conversationScopeId?: ScopeId;
   maxChars?: number;
   autonomous?: boolean;
+  /** Conversation thread of the turn asking, so recall observers can tie a hit to a run. */
+  threadRef?: string;
 }
 
 export interface MemoryCaptureContext {

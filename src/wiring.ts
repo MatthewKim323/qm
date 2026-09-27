@@ -1927,8 +1927,10 @@ export function buildApp(
     memoryStrategy,
     ...(config.memoryProviderConfig
       ? {
-          procedureRecall: (scopeId: ScopeId, context: { query: string; actorId?: string; autonomous?: boolean }) =>
-            baseMemory.recall(scopeId, context),
+          procedureRecall: (
+            scopeId: ScopeId,
+            context: { query: string; actorId?: string; autonomous?: boolean; threadRef?: string },
+          ) => baseMemory.recall(scopeId, context),
         }
       : {}),
     skills,
