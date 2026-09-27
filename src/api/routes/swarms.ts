@@ -21,6 +21,13 @@ async function swarmRequest(ctx: ApiCtx): Promise<void> {
   } else return sendJson(res, 403, { error: "session-bound authentication required" });
   try {
     if (method === "GET") {
+      if (url.searchParams.get("await") === "workers") {
+        return sendJson(
+          res,
+          200,
+          await app.swarms.awaitWorkers(caller, { waitMs: Number(url.searchParams.get("waitMs") ?? 0) }),
+        );
+      }
       if (url.searchParams.get("read") === "1") {
         const messages = await app.swarms.read(caller, {
           after: Number(url.searchParams.get("after") ?? 0),
@@ -32,6 +39,26 @@ async function swarmRequest(ctx: ApiCtx): Promise<void> {
       return sendJson(res, 200, await app.swarms.inspect(caller));
     }
     if (!isObj(body)) throw new Error("expected an object");
+    if (body.action === "spawn_plan") {
+      // A spawn request QM prepared for a routed world event: the root names it instead of copying it.
+      if (Object.keys(body).some((key) => key !== "action" && key !== "requestId"))
+        throw new Error("unsupported swarm request field");
+      const plan = typeof body.requestId === "string" ? ctx.deps.worldHooks?.spawnPlan(body.requestId) : undefined;
+      if (!plan) throw new Error("no prepared spawn plan for that requestId");
+      const members = await app.swarms.spawn(caller, {
+        requestId: plan.requestId,
+        text: plan.text,
+        contexts: plan.contexts,
+        settings: plan.settings,
+      });
+      return sendJson(res, 202, {
+        members: members.map((m) => ({
+          id: m.id,
+          name: (m.context as { name?: unknown } | null)?.name,
+          state: m.state,
+        })),
+      });
+    }
     const allowed = new Set([
       "action",
       ...(caller.kind === "human" ? ["runId"] : []),
@@ -68,7 +95,7 @@ async function swarmRequest(ctx: ApiCtx): Promise<void> {
     }
     if (body.action === "send") {
       if (
-        !(Array.isArray(body.audience) || body.audience === "all") ||
+        !(Array.isArray(body.audience) || body.audience === "all" || body.audience === "parent") ||
         (body.notify !== undefined && typeof body.notify !== "boolean") ||
         (body.replyTo !== undefined && typeof body.replyTo !== "string")
       )

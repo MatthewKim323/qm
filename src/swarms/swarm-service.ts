@@ -44,7 +44,8 @@ interface SpawnInput {
 
 interface MessageInput {
   requestId: string;
-  audience: string[] | "all";
+  /** Explicit peer ids, every member, or "parent" (the member that spawned the sender). */
+  audience: string[] | "all" | "parent";
   text: string;
   replyTo?: string;
   notify?: boolean;
@@ -74,7 +75,32 @@ export interface SwarmService {
   spawn(caller: SwarmCaller, input: SpawnInput): Promise<SwarmMember[]>;
   send(caller: SwarmCaller, input: MessageInput): Promise<SwarmMessage>;
   read(caller: SwarmCaller, options: { after?: number; replyTo?: string; waitMs?: number }): Promise<SwarmMessage[]>;
+  /**
+   * One blocking call for a coordinator: waits until every worker the caller spawned has sent at
+   * least one message (or failed), up to waitMs, and returns each worker's messages. While the caller
+   * waits, its workers' messages to it are not also queued as notification turns.
+   */
+  awaitWorkers(caller: SwarmCaller, options: { waitMs?: number }): Promise<AwaitResult>;
   binding(input: OrchestratorInput): Promise<{ sandboxId?: string; rootSessionId: string; member: SwarmMember } | null>;
+}
+
+/** Upper bound for one awaitWorkers call; stays under the default 300s command ceiling. */
+export const AWAIT_MAX_MS = 290_000;
+
+export interface AwaitResult {
+  done: boolean;
+  reports: Array<{
+    memberId: string;
+    name?: string;
+    state: SwarmMember["state"];
+    messages: Array<{ seq: number; text: string }>;
+  }>;
+  pending: Array<{ memberId: string; name?: string }>;
+}
+
+function memberName(context: unknown): string | undefined {
+  const name = context && typeof context === "object" ? (context as { name?: unknown }).name : undefined;
+  return typeof name === "string" ? name : undefined;
 }
 
 function boundedText(value: string, max: number, name: string): void {
@@ -82,7 +108,7 @@ function boundedText(value: string, max: number, name: string): void {
 }
 
 function canonicalAudience(input: MessageInput["audience"], max: number): MessageInput["audience"] {
-  if (input === "all") return input;
+  if (input === "all" || input === "parent") return input;
   if (
     !Array.isArray(input) ||
     input.length > max ||
@@ -92,9 +118,13 @@ function canonicalAudience(input: MessageInput["audience"], max: number): Messag
   return [...new Set(input)].sort();
 }
 
-function resolveAudience(input: MessageInput["audience"], eligible: SwarmMember[]): string[] {
+function resolveAudience(input: MessageInput["audience"], eligible: SwarmMember[], self?: SwarmMember): string[] {
   const ids = new Set(eligible.map((peer) => peer.id));
   if (input === "all") return [...ids].sort();
+  if (input === "parent") {
+    if (!self?.parentId || !ids.has(self.parentId)) throw new Error("no parent to address");
+    return [self.parentId];
+  }
   if (input.some((id) => !ids.has(id))) throw new Error("invalid audience");
   return input;
 }
@@ -177,6 +207,9 @@ export function createSwarmService(deps: {
     ...member,
     ...(member.sessionId ? { sessionUrl: `/web-ui/s/${encodeURIComponent(member.sessionId)}` } : {}),
   });
+
+  /** Members currently blocked in awaitWorkers, as `<swarm id>:<member id>`. */
+  const awaiting = new Set<string>();
 
   async function authority(caller: SwarmCaller): Promise<{ auth: Authority; swarm: Swarm | null }> {
     const actorId = caller.kind === "agent" ? caller.claims.actorId : caller.actorId;
@@ -319,12 +352,29 @@ export function createSwarmService(deps: {
     };
   }
 
+  /**
+   * A worker's first message carries its own role brief from its spawn context, so it starts
+   * working instead of first calling GET /v1/swarm to discover what it was spawned for.
+   */
+  function roleHeader(swarm: Swarm, message: SwarmMessage, recipient: SwarmMember): string {
+    const ctx = recipient.context;
+    if (!ctx || typeof ctx !== "object" || Array.isArray(ctx)) return "";
+    const { name, role, brief } = ctx as { name?: unknown; role?: unknown; brief?: unknown };
+    if (typeof brief !== "string" || !brief.trim()) return "";
+    const first = swarm.messages.find((item) => item.audience.includes(recipient.id));
+    if (first?.id !== message.id || message.senderId !== recipient.parentId) return "";
+    const label = [typeof name === "string" ? name : "", typeof role === "string" ? `(${role})` : ""]
+      .filter(Boolean)
+      .join(" ");
+    return `Your swarm role${label ? `: ${label}` : ""}. Brief from your spawn context:\n${brief.trim()}\n\n`;
+  }
+
   function dispatchRequest(swarm: Swarm, message: SwarmMessage, recipient: SwarmMember): OrchestratorInput {
     return {
       ...swarm.template,
       conversation: { ...swarm.template.conversation, threadRef: recipient.threadRef },
       origin: { kind: "automation", screenData: message.text },
-      text: `Swarm ${message.author} message ${message.id} from agent ${message.senderId} (session ${message.senderSessionId})${message.replyTo ? ` (reply to ${message.replyTo})` : ""}. This is not a live human instruction.\n${message.text}`,
+      text: `Swarm ${message.author} message ${message.id} from agent ${message.senderId} (session ${message.senderSessionId})${message.replyTo ? ` (reply to ${message.replyTo})` : ""}. This is not a live human instruction.\n${roleHeader(swarm, message, recipient)}${message.text}`,
       swarm: { swarmId: swarm.id, messageId: message.id, recipientId: recipient.id },
       sessionParticipantIds: swarm.participants,
     };
@@ -642,7 +692,7 @@ export function createSwarmService(deps: {
     },
     async send(caller, input) {
       boundedText(input.requestId, 128, "requestId");
-      const { auth, swarm } = await load(caller);
+      const { auth, swarm, self } = await load(caller);
       boundedText(input.text, swarm.settings.textBytes, "text");
       input = { ...input, audience: canonicalAudience(input.audience, swarm.settings.agents) };
       const key = signature([auth.memberId, auth.actorId, caller.kind, input.requestId]);
@@ -660,7 +710,7 @@ export function createSwarmService(deps: {
         if (session?.scopeId === swarm.scopeId && rosterMatches(participants, swarm.participants))
           eligible.push(member);
       }
-      const audience = resolveAudience(input.audience, eligible);
+      const audience = resolveAudience(input.audience, eligible, self);
       const id = randomUUID();
       const updated = await update(auth, (swarm) => {
         const previous = swarm.messageRequests[key];
@@ -672,7 +722,10 @@ export function createSwarmService(deps: {
         if (swarm.messages.length >= swarm.settings.messages) throw new Error("swarm message budget exhausted");
         if (input.replyTo && !swarm.messages.some((message) => message.id === input.replyTo))
           throw new Error("reply target is not in this swarm");
-        const recipients = input.notify === false ? [] : audience.filter((peer) => peer !== auth.memberId);
+        const recipients =
+          input.notify === false
+            ? []
+            : audience.filter((peer) => peer !== auth.memberId && !awaiting.has(`${swarm.id}:${peer}`));
         if (swarm.notificationCount + recipients.length > swarm.settings.notifications)
           throw new Error("swarm notification budget exhausted");
         swarm.notificationCount += recipients.length;
@@ -713,6 +766,36 @@ export function createSwarmService(deps: {
         if (messages.length || Date.now() >= deadline) return messages;
         await sleep(Math.min(200, deadline - Date.now()));
         ({ swarm } = await load(caller));
+      }
+    },
+    async awaitWorkers(caller, options) {
+      let { auth, swarm } = await load(caller);
+      const waitMs = options.waitMs ?? 0;
+      if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > AWAIT_MAX_MS) throw new Error("invalid await bounds");
+      const key = `${swarm.id}:${auth.memberId}`;
+      const deadline = Date.now() + waitMs;
+      awaiting.add(key);
+      try {
+        for (;;) {
+          const children = swarm.members.filter((member) => member.parentId === auth.memberId);
+          const reports: AwaitResult["reports"] = [];
+          const pending: AwaitResult["pending"] = [];
+          for (const child of children) {
+            const name = memberName(child.context);
+            const messages = swarm.messages
+              .filter((message) => message.senderId === child.id)
+              .map((message) => ({ seq: message.seq, text: message.text }));
+            if (messages.length || child.state === "failed")
+              reports.push({ memberId: child.id, ...(name ? { name } : {}), state: child.state, messages });
+            else pending.push({ memberId: child.id, ...(name ? { name } : {}) });
+          }
+          const done = children.length > 0 && pending.length === 0;
+          if (done || Date.now() >= deadline) return { done, reports, pending };
+          await sleep(Math.min(500, deadline - Date.now()));
+          ({ auth, swarm } = await load(caller));
+        }
+      } finally {
+        awaiting.delete(key);
       }
     },
     async binding(input) {

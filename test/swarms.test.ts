@@ -985,3 +985,49 @@ test("an old session credential cannot attach to a replacement session on the sa
   await assert.rejects(fixture.service.spawn(fixture.caller, { requestId: "replacement", text: "Work" }), /mismatch/);
   assert.equal(await fixture.store.get(replacement.id), null);
 });
+
+test("awaitWorkers blocks until every spawned worker reports, and parent reports do not wake the waiter", async () => {
+  const { service, caller, workerCaller, root } = await swarmFixture();
+  const workers = await service.spawn(caller, {
+    requestId: "pool",
+    count: 2,
+    contexts: [
+      { name: "Context", role: "context", brief: "Write context.md" },
+      { name: "Builder", role: "builder", brief: "Dispatch" },
+    ],
+    text: "World event evt_1",
+  });
+  await service.sweep();
+  const early = await service.awaitWorkers(caller, { waitMs: 0 });
+  assert.equal(early.done, false);
+  assert.deepEqual(
+    early.pending.map((p) => p.name),
+    ["Context", "Builder"],
+  );
+  const waiting = service.awaitWorkers(caller, { waitMs: 5_000 });
+  await new Promise((r) => setTimeout(r, 50));
+  const a = await service.send(await workerCaller(workers[0]!.id), {
+    requestId: "report",
+    audience: "parent",
+    text: "CONTEXT_OK",
+  });
+  assert.deepEqual(a.audience, [root.id]);
+  assert.deepEqual(Object.keys(a.notifications), [], "the waiting parent is not queued a notification turn");
+  await service.send(await workerCaller(workers[1]!.id), {
+    requestId: "report",
+    audience: "parent",
+    notify: false,
+    text: "DISPATCH_OK",
+  });
+  const out = await waiting;
+  assert.equal(out.done, true);
+  assert.deepEqual(
+    out.reports.map((r) => [r.name, r.messages.map((m) => m.text)]),
+    [
+      ["Context", ["CONTEXT_OK"]],
+      ["Builder", ["DISPATCH_OK"]],
+    ],
+  );
+  await assert.rejects(service.awaitWorkers(caller, { waitMs: 400_000 }), /invalid await bounds/);
+  await assert.rejects(service.send(caller, { requestId: "p", audience: "parent", text: "x" }), /no parent/);
+});

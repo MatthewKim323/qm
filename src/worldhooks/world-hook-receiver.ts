@@ -63,6 +63,8 @@ export interface WorldHookReceiver {
   watches?: WorldWatchStore;
   entities?: WorldEntityStore;
   tracker?: WorldSwarmTracker;
+  /** The spawn request QM prepared for a routed world event, by its swarm requestId. */
+  spawnPlan(requestId: string): WorldSpawnBody | undefined;
   createWatch(body: unknown): Promise<WorldWatch | string>;
   adopt(req: { kind: EntityKind; entityId: string; label: string; via?: "api" | "world"; eventId?: string }): Promise<{
     entity: WorldEntity;
@@ -123,29 +125,62 @@ export function parseWorldEvent(rawBody: string): WorldEvent | string {
   return body as unknown as WorldEvent;
 }
 
-export function worldSwarmPlan(
+/** Event JSON carried inside the spawn text; the swarm text cap is 16 KiB. */
+const MAX_SPAWN_EVENT_CHARS = 11_000;
+
+/** How a worker reports: once, to the member that spawned it, without waking it for a new turn. */
+export const WORKER_REPORT_RULE =
+  'When your verifying command has passed, report exactly once with POST $AGENT_API_URL/v1/swarm and body {"action":"send","requestId":"report","audience":"parent","notify":false,"text":<your report>}. That report ends your work: do not read or poll the swarm, do not message other workers, and do not wait for anyone. Never contact anyone outside QM; drafts only.';
+
+export interface WorldSpawnBody {
+  action: "spawn";
+  requestId: string;
+  settings: { textBytes: number };
+  contexts: Array<{ group: string; role: string; name: string; brief: string }>;
+  text: string;
+}
+
+/** The exact spawn request for a routed world event; QM holds it so the root never copies JSON. */
+export function worldSpawnBody(
   event: WorldEvent,
   route: { swarm?: { workers: WorldSwarmWorker[] } },
   requestPrefix = "world",
-): string | undefined {
+): WorldSpawnBody | undefined {
   if (!route.swarm) return undefined;
-  const requestId = `${requestPrefix}:${event.id}`;
-  const spawn = {
+  const eventJson = JSON.stringify(event);
+  const carried =
+    eventJson.length <= MAX_SPAWN_EVENT_CHARS ? eventJson : `${eventJson.slice(0, MAX_SPAWN_EVENT_CHARS)}…[truncated]`;
+  return {
     action: "spawn",
-    requestId,
+    requestId: `${requestPrefix}:${event.id}`,
+    settings: { textBytes: 16_384 },
     contexts: route.swarm.workers.map((w) => ({
       group: `world:${event.type}`,
       role: w.role,
       name: w.name,
       brief: w.brief,
     })),
-    text: `Handle world event ${event.id} (${event.type}). The swarm root sends you the world event as a swarm message; do only the role in your context brief, and report findings to the root with a swarm send. Never contact anyone outside QM; drafts only.`,
+    text: [
+      `World event ${event.id} (${event.type}). Do only the role in your brief above; the event is below, so there is nothing to fetch or wait for.`,
+      WORKER_REPORT_RULE,
+      `<world-event-json>${carried}</world-event-json>`,
+    ].join("\n"),
   };
+}
+
+export function worldSwarmPlan(
+  event: WorldEvent,
+  route: { swarm?: { workers: WorldSwarmWorker[] } },
+  requestPrefix = "world",
+): string | undefined {
+  const spawn = worldSpawnBody(event, route, requestPrefix);
+  if (!spawn) return undefined;
+  const names = spawn.contexts.map((c) => c.name).join(", ");
   return [
-    `Run this as a swarm. First, spawn exactly these ${route.swarm.workers.length} workers with one call to POST /v1/swarm using this body:`,
-    JSON.stringify(spawn, null, 2),
-    `Then send the world event JSON to all workers with {"action":"send","requestId":"${requestId}:event","audience":"all","text":<the event JSON>}.`,
-    "Tail replies with GET /v1/swarm?read=1. When every worker has reported, reply with one short summary of what each worker produced and which items await human approval before any external send.",
+    "Run this as a swarm in three steps. The swarm plumbing is already decided; do not explore the swarm API or write spawn JSON yourself.",
+    `1) Spawn the ${spawn.contexts.length} workers (${names}) with ONE execute call. QM already holds the full spawn request, world event included, so there is no separate send: curl -sS -m 60 -H "x-agent-capability: $AGENT_API_TOKEN" -H 'content-type: application/json' --data '{"action":"spawn_plan","requestId":"${spawn.requestId}"}' "$AGENT_API_URL/v1/swarm"`,
+    `2) Wait for every worker with ONE blocking execute call (timeout_seconds 300; never poll ?read=1, never sleep): curl -sS -m 295 -H "x-agent-capability: $AGENT_API_TOKEN" "$AGENT_API_URL/v1/swarm?await=workers&waitMs=280000". It returns {done, reports, pending}; only if done is false, make the same call once more.`,
+    "3) Write your summary artifact and run your verifying command in one execute call, then reply with one short summary of what each worker produced and which items await human approval before any external send.",
   ].join("\n");
 }
 
@@ -159,6 +194,12 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 
 export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookReceiver {
   const { config, tracker, watches, entities, oneShot, ...triggerDeps } = deps;
+  const spawnPlans = new Map<string, WorldSpawnBody>();
+  const rememberSpawn = (body: WorldSpawnBody | undefined) => {
+    if (!body) return;
+    spawnPlans.set(body.requestId, body);
+    if (spawnPlans.size > 200) spawnPlans.delete(spawnPlans.keys().next().value!);
+  };
 
   interface Fire {
     title: string;
@@ -210,7 +251,10 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
           scopeId: f.ownerScopeId,
           ...(typeof anchor === "number" ? { anchorTrackId: anchor } : {}),
           people: (event.people ?? [])
-            .map((p) => (isObj(p) && typeof p.id === "string" ? p.id : typeof p === "string" ? p : ""))
+            .map((p) => {
+              if (isObj(p) && typeof p.id === "string") return p.id;
+              return typeof p === "string" ? p : "";
+            })
             .filter(Boolean),
           project: event.project ?? null,
           ...(f.workers?.length ? { plannedWorkers: f.workers } : {}),
@@ -279,6 +323,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
     watches,
     entities,
     ...(tracker ? { tracker } : {}),
+    spawnPlan: (requestId) => spawnPlans.get(requestId),
     authorize: (headers, rawBody) => authorized(config.secret, headers, rawBody),
     createWatch: (body) => createWatch(body),
     adopt,
@@ -324,6 +369,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
       if (route) {
         const fireKey = `world:${event.type}:${event.id}`;
         const swarmPlan = worldSwarmPlan(event, route);
+        rememberSpawn(worldSpawnBody(event, route));
         const fired = await fire(event, {
           title: `World event: ${event.type}`,
           owner: route.owner,
@@ -345,6 +391,7 @@ export function createWorldHookReceiver(deps: WorldHookReceiverDeps): WorldHookR
           if (!watch.active || !matchesWatch(watch.match, event)) continue;
           const fireKey = `world-watch:${watch.id}:${event.id}`;
           const swarmPlan = worldSwarmPlan(event, watch, `world-watch:${watch.id}`);
+          rememberSpawn(worldSpawnBody(event, watch, `world-watch:${watch.id}`));
           const orders = watch.instruction
             ? `${watch.action}\n\n(Standing watch ${watch.id}, set from the owner's words: "${watch.instruction}")`
             : watch.action;

@@ -65,9 +65,16 @@ test("customer feedback wakes the owner with the three worker swarm plan", async
   assert.equal(req.triggered, true);
   assert.match(req.text, /reason="world-event"/);
   assert.match(req.text, /world-event-type="customer_feedback.detected"/);
-  assert.match(req.text, /POST \/v1\/swarm/);
-  assert.match(req.text, /"requestId": "world:evt_01J8WORLDTEST"/);
+  assert.match(req.text, /"action":"spawn_plan","requestId":"world:evt_01J8WORLDTEST"/);
+  assert.match(req.text, /await=workers/);
   assert.match(req.text, /Canvas setup was confusing/);
+  const plan = receiver.spawnPlan("world:evt_01J8WORLDTEST")!;
+  assert.deepEqual(
+    plan.contexts.map((c) => c.name),
+    ["Context", "Product", "Follow-up"],
+  );
+  assert.match(plan.text, /"audience":"parent","notify":false/);
+  assert.match(plan.text, /Canvas setup was confusing/);
 });
 
 test("the same event id fires once", async () => {
