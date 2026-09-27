@@ -1,16 +1,19 @@
 {
-  "id": "evt_01J8ALEXCANVAS01",
+  "id": "evt_01J8MATTHEWOPAL01",
   "type": "customer_feedback.detected",
   "ts": "2026-09-27T20:14:03Z",
   "source": "manual",
-  "confidence": 0.93,
-  "people": [{ "id": "alex", "name": "Alex", "enrolled": true }],
-  "project": "syla",
+  "confidence": 0.92,
+  "people": [
+    { "id": "stephen", "name": "Stephen", "enrolled": true },
+    { "id": "matthew", "name": "Matthew", "enrolled": true }
+  ],
+  "project": "opal",
   "payload": {
-    "product": "Canvas",
-    "feature": "onboarding",
-    "sentiment": "neg",
-    "feedback": "Canvas setup was confusing, we'd roll it out if onboarding were easier",
-    "buying_signal": "would roll out if onboarding were easier"
+    "product": "Opal",
+    "feature": "Landing page",
+    "sentiment": "mixed",
+    "feedback": "Landing page sells the data engine but never says how a player actually gets paid",
+    "buying_signal": "Would get his friends on the Discord bot if the payout flow were clear"
   }
 }

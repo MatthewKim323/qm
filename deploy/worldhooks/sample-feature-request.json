@@ -3,13 +3,17 @@
   "type": "feature_request.detected",
   "ts": "2026-09-27T21:30:00Z",
   "source": "manual",
-  "confidence": 0.91,
-  "people": [{ "id": "matthew", "name": "Matthew", "enrolled": true }],
-  "project": "syla",
+  "confidence": 0.93,
+  "people": [
+    { "id": "stephen", "name": "Stephen", "enrolled": true },
+    { "id": "matthew", "name": "Matthew", "enrolled": true }
+  ],
+  "project": "opal",
   "payload": {
-    "product": "Canvas",
-    "feature": "onboarding",
-    "request": "Let me import my existing Google Calendar during onboarding instead of recreating every event by hand",
-    "requested_by": "matthew"
+    "product": "Opal",
+    "feature": "Add How it works section under hero",
+    "request": "Show three steps under the hero: play, Opal labels your gameplay, get paid",
+    "requested_by": "Matthew",
+    "acceptance": ["Section directly below the hero", "Three numbered steps"]
   }
 }
