@@ -17,6 +17,8 @@ export interface WorldHookRoute {
 export interface WorldHooksConfig {
   secret: string;
   routes: Record<string, WorldHookRoute>;
+  /** Owner used by WorldWatches and adopted entities that name none; top-level owner/ownerScopeId. */
+  defaults: { owner: string; ownerScopeId: ScopeId };
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -58,7 +60,12 @@ export function parseWorldHooksConfig(raw: unknown, secret: string): WorldHooksC
   if (!isObj(raw) || !isObj(raw.routes)) throw new Error("WORLD_HOOKS_FILE must contain a routes object");
   const routes: Record<string, WorldHookRoute> = {};
   for (const [type, route] of Object.entries(raw.routes)) routes[type] = parseRoute(type, route, raw);
-  return { secret, routes };
+  const first = Object.values(routes)[0];
+  const owner = nonEmpty(raw.owner) ? raw.owner.trim() : (first?.owner ?? "owner");
+  const scope = nonEmpty(raw.ownerScopeId) ? (raw.ownerScopeId.trim() as ScopeId) : undefined;
+  const ownerScopeId =
+    scope && parseScopeId(scope).kind !== null ? scope : (first?.ownerScopeId ?? (`personal:${owner}` as ScopeId));
+  return { secret, routes, defaults: { owner, ownerScopeId } };
 }
 
 export function loadWorldHooksConfig(env: Record<string, string | undefined>): WorldHooksConfig | undefined {

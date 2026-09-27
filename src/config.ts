@@ -52,6 +52,8 @@ export interface Config {
   swarmsEnabled?: boolean;
   swarmDefaults?: SwarmSettings;
   worldHooks?: WorldHooksConfig;
+  /** WORLD service HUD endpoint that receives WorldHook swarm activity (WORLD_HUD_URL). */
+  worldHudUrl?: string;
   production: boolean;
   allowUnauthenticatedCore: boolean;
   port: number;
@@ -1540,6 +1542,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     swarmsEnabled: boolEnvStrict("SWARMS_ENABLED", env.SWARMS_ENABLED) ?? true,
     swarmDefaults,
     ...(worldHooks ? { worldHooks } : {}),
+    ...(worldHooks && env.WORLD_HUD_URL?.trim() ? { worldHudUrl: env.WORLD_HUD_URL.trim() } : {}),
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
     backgroundJobTtlMs:

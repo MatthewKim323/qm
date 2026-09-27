@@ -60,7 +60,7 @@ test("customer feedback wakes the owner with the three worker swarm plan", async
   await flush();
   assert.equal(calls.length, 1);
   const req = calls[0]!;
-  assert.equal(req.actor.externalId, "matt");
+  assert.equal(req.actor.externalId, "stephen");
   assert.equal(req.surface, "webhook");
   assert.equal(req.triggered, true);
   assert.match(req.text, /reason="world-event"/);

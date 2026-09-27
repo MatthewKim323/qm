@@ -174,6 +174,9 @@ import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
 import { createWorldHookReceiver, type WorldHookReceiver } from "./worldhooks/world-hook-receiver.ts";
+import { createWorldSwarmTracker } from "./worldhooks/world-swarm-tracker.ts";
+import { createWorldWatchStore, type WorldWatch } from "./worldhooks/world-watches.ts";
+import { createWorldEntityStore, type WorldEntity } from "./worldhooks/world-entities.ts";
 import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./deploy/deploy-store.ts";
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
@@ -2498,6 +2501,20 @@ export function buildApp(
   const worldHooks = config.worldHooks
     ? createWorldHookReceiver({
         config: config.worldHooks,
+        watches: createWorldWatchStore(artifactMap<WorldWatch>("world_watches")),
+        entities: createWorldEntityStore(artifactMap<WorldEntity>("world_entities")),
+        ...(harness.models.oneShot
+          ? { oneShot: (system: string, prompt: string) => harness.models.oneShot!(system, prompt) }
+          : {}),
+        ...(pgArtifactMap
+          ? {
+              tracker: createWorldSwarmTracker({
+                q: (text, params) => pgArtifactMap.pool.q(text, params),
+                memory: baseMemory,
+                ...(config.worldHudUrl ? { hudUrl: config.worldHudUrl } : {}),
+              }),
+            }
+          : {}),
         deliveries,
         idempotency,
         identity,

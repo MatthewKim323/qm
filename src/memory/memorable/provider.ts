@@ -3,6 +3,7 @@ import type { MemoryService } from "../memory-service.ts";
 import { captureSession, type MemorableCapture, type MemorableToolCall } from "./capture.ts";
 import { memorableInject } from "./inject.ts";
 import { relayRecord } from "./relay.ts";
+import { memorableEvents } from "../../worldhooks/world-swarm-tracker.ts";
 
 export interface MemorableProviderDeps {
   argv: readonly string[];
@@ -60,6 +61,10 @@ export function createMemorableMemoryProvider(deps: MemorableProviderDeps): Memo
       const task = context?.query?.trim();
       if (!task) return "";
       const block = await inject(deps.argv, scopeId, task, spawnOpts, deps.injectTimeoutMs);
+      if (block) {
+        console.log(`[memorable] recall hit scope=${scopeId} chars=${block.length}`);
+        memorableEvents.emit("recall", { scopeId, task, block });
+      }
       return block ?? "";
     },
 
