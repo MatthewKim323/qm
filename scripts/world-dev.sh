@@ -5,6 +5,7 @@
 #   scripts/world-dev.sh env     # write qm.env (once; keeps existing secrets)
 #   scripts/world-dev.sh pg      # start the Postgres container
 #   scripts/world-dev.sh up      # env + pg + start QM in the foreground (PORT, default 8091)
+#   scripts/world-dev.sh gc      # remove finished swarm workers' docker computers (run between demo takes)
 #
 # Secrets come from the WORLD repo (PRESENT_DIR, default ~/dev/present):
 #   perception/.env   ANTHROPIC_API_KEY
@@ -105,6 +106,27 @@ cmd_up() {
   exec node --env-file="$ENV_FILE" src/index.ts
 }
 
+cmd_gc() {
+  # Each swarm worker keeps a local docker computer + network; Docker runs out of address pools
+  # after ~25 of them ("all predefined address pools have been fully subnetted"). Remove the
+  # computers of this instance's swarm workers (finished swarms only need their transcripts).
+  local ids
+  ids="$(docker exec "$PG_NAME" psql -U qm -d qm -At -c \
+    "select m->>'sandboxId' from swarms w cross join jsonb_array_elements(w.json->'members') m where m->>'sandboxId' is not null" | cut -c1-30)"
+  local n=0
+  for name in $(docker ps -a --format '{{.Names}}' | grep '^qm-sbx-sandbox-' || true); do
+    local id="${name#qm-sbx-sandbox-}"
+    id="${id:0:30}"
+    grep -q "^${id}" <<<"$ids" || continue
+    local nets
+    nets="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$name")"
+    docker rm -f "$name" >/dev/null
+    for net in $nets; do [[ "$net" == qm-net-* ]] && docker network rm "$net" >/dev/null 2>&1 || true; done
+    n=$((n + 1))
+  done
+  echo "removed $n swarm worker computers"
+}
+
 cmd_consent() {
   echo "MEMORABLE_BACKEND=qm MEMORABLE_DB_URL=postgres://qm:qm@127.0.0.1:${PG_PORT}/qm memorable enable --scope ${SCOPE}"
 }
@@ -114,5 +136,6 @@ case "${1:-up}" in
   pg) cmd_pg ;;
   up) cmd_up ;;
   consent) cmd_consent ;;
-  *) echo "usage: $0 [env|pg|up|consent]" >&2; exit 2 ;;
+  gc) cmd_gc ;;
+  *) echo "usage: $0 [env|pg|up|consent|gc]" >&2; exit 2 ;;
 esac

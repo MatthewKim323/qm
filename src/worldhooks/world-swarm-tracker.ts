@@ -363,6 +363,21 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
       toolErrors: per.reduce((a, { m }) => a + m.toolErrors, 0),
       wallMs: Number.isFinite(t0) && t1 ? t1 - t0 : 0,
     };
+    const planned = req.plannedWorkers ?? [];
+    const finalLanes: WorkerStatus[] = await Promise.all(
+      all
+        .filter((s) => s.name !== "Root" || (all.length === 1 && !planned.length))
+        .map(async (s) => ({ name: s.name, state: toState((await latestRun(s.threadRef)).status) })),
+    );
+    for (const name of planned)
+      if (!finalLanes.some((w) => w.name === name)) finalLanes.push({ name, state: "failed", note: "not spawned" });
+    await hud({
+      kind: "agent_activity",
+      ...(req.anchorTrackId !== undefined ? { anchor_track_id: req.anchorTrackId } : {}),
+      hook: req.type,
+      event_id: req.eventId,
+      workers: finalLanes,
+    });
     let captured = 0;
     let captureError: string | undefined;
     if (deps.memory) {
