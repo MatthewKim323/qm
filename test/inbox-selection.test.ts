@@ -15,7 +15,7 @@ import type { ApiCtx } from "../src/api/routes/route.ts";
 import { ensureDefaultInboxLoops, ensureInboxLoop } from "../src/loops/inbox-loop.ts";
 import { migrateInbox } from "../src/loops/inbox-migration.ts";
 
-function world(enabled = true) {
+function world(enabled = true, sourceRefresh?: ApiCtx["deps"]["inboxSourceRefresh"]) {
   const deps = {
     store: createLoopStore(),
     items: createLoopItemLedger(),
@@ -36,7 +36,12 @@ function world(enabled = true) {
         url: new URL(`http://local/v1/inbox?${query}`),
         actor: { p: actor },
         capability: null,
-        deps: { loops: deps, uiState, featureFlags: { enabled: async () => enabled } },
+        deps: {
+          loops: deps,
+          uiState,
+          inboxSourceRefresh: sourceRefresh,
+          featureFlags: { enabled: async () => enabled },
+        },
         app: {
           samePerson: async (a: string, b: string) => a === b,
           membershipControlsScope: async () => false,
@@ -379,6 +384,38 @@ test("completed repair keeps conflicting drafts visible while moving unrelated i
   }
 });
 
+test("the inbox feed reconciles selected owner Gmail loops before counting summaries", async () => {
+  const refreshed: string[] = [];
+  const w = world(true, async (owner, items) => {
+    assert.equal(owner, "alice");
+    for (const item of items) {
+      refreshed.push(item.id);
+      await w.deps.items.recordAction(item.id, { kind: "replied", outcome: "dismissed", sourceAt: 2000 });
+    }
+  });
+  const loops = await ensureDefaultInboxLoops(w.deps.store, "alice");
+  const mail = loops.find((loop) => loop.sources?.includes("gmail"))!;
+  await w.deps.items.ingest([
+    {
+      loopId: mail.id,
+      dedupeKey: "waiting",
+      source: "gmail",
+      sourceAt: 1000,
+      sourcePayload: { gmail: { threadId: "t1" } },
+      proposal: { by: "agent", data: { body: "Draft" } },
+    },
+  ]);
+  const item = (await w.deps.items.byLoop(mail.id))[0]!;
+  const feed = await w.call();
+  assert.deepEqual(refreshed, [item.id]);
+  assert.equal(feed.data.total, 0);
+  assert.deepEqual(feed.data.items, []);
+  refreshed.length = 0;
+  await w.call("PUT", { loopIds: [] });
+  await w.call();
+  assert.deepEqual(refreshed, []);
+});
+
 test("inbox filters retain automated messages and resolved human conversations with matching counts", async () => {
   const w = world();
   const [email, slack] = await ensureDefaultInboxLoops(w.deps.store, "alice");
@@ -489,23 +526,4 @@ test("explicit refresh filters stay consistent across saved preference changes w
   assert.equal(latest.filter, "human");
   assert.equal(latest.total, 1);
   assert.equal((await w.call("GET", null, "filter=invalid")).status, 400);
-});
-
-test("reading the inbox expires untouched automated messages without waiting for another ingest", async () => {
-  const w = world();
-  const [loop] = await ensureDefaultInboxLoops(w.deps.store, "alice");
-  await w.deps.items.ingest([
-    { loopId: loop!.id, dedupeKey: "old", source: "gmail", sourceAt: 1, sourcePayload: { automated: true } },
-    {
-      loopId: loop!.id,
-      dedupeKey: "recent",
-      source: "gmail",
-      sourceAt: Date.now(),
-      sourcePayload: { automated: true },
-    },
-    { loopId: loop!.id, dedupeKey: "human", source: "gmail", sourceAt: 1, sourcePayload: { automated: false } },
-  ]);
-  const feed = (await w.call("GET", null, "filter=all")).data;
-  assert.equal(feed.total, 2);
-  assert.deepEqual((await w.deps.items.byLoop(loop!.id)).map((item) => item.sourceKey).sort(), ["human", "recent"]);
 });

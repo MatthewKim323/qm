@@ -10,7 +10,7 @@ function raw(over: Record<string, unknown> = {}): Record<string, unknown> {
     from: "Alex",
     snippet: "also what about the deck?",
     receivedAt: 1_000,
-    slack: { channelId: "G555", ts: "1000.100" },
+    slack: { channelId: "G555", ts: "1000.100", isDirectMessage: true },
     ...over,
   };
 }
@@ -33,6 +33,27 @@ test("channel asks dedupe per thread", () => {
   assert.equal(topLevel.dedupeKey, "C7:300.3");
 });
 
+test("G-prefixed private channels are not mistaken for group DMs", () => {
+  for (const isDirectMessage of [undefined, false]) {
+    const parsed = slackAdapter.parse(raw({ slack: { channelId: "G555", ts: "1000.100", isDirectMessage } }));
+    assert.ok(!("error" in parsed));
+    assert.equal(parsed.dedupeKey, "G555:1000.100");
+  }
+});
+
+test("explicit DM threads remain separate from the unthreaded conversation", () => {
+  for (const channelId of ["D42", "G555", "C555"]) {
+    const parsed = slackAdapter.parse(
+      raw({ slack: { channelId, ts: "300.3", threadTs: "100.1", isDirectMessage: true } }),
+    );
+    assert.ok(!("error" in parsed));
+    assert.equal(parsed.dedupeKey, `${channelId}:100.1`);
+    const unthreaded = slackAdapter.parse(raw({ slack: { channelId, ts: "300.3", isDirectMessage: true } }));
+    assert.ok(!("error" in unthreaded));
+    assert.equal(unthreaded.dedupeKey, channelId);
+  }
+});
+
 test("probablyResolved and image URLs survive parsing", () => {
   const parsed = slackAdapter.parse(
     raw({
@@ -47,15 +68,4 @@ test("probablyResolved and image URLs survive parsing", () => {
   assert.deepEqual(payload.images, ["https://files.slack.com/a.png"]);
   const context = payload.context as Array<Record<string, unknown>>;
   assert.deepEqual(context[0]!.images, ["https://files.slack.com/b.png"]);
-});
-
-test("automated messages are retained without a draft and refreshed classifications can clear the flag", () => {
-  const parsed = slackAdapter.parse(raw({ automated: true }));
-  assert.ok(!("error" in parsed));
-  assert.equal(parsed.sourcePayload.automated, true);
-  assert.equal(parsed.proposal, undefined);
-  const human = slackAdapter.parse(raw({ automated: false, probablyResolved: false }));
-  assert.ok(!("error" in human));
-  assert.equal(human.sourcePayload.automated, false);
-  assert.equal(human.sourcePayload.probablyResolved, false);
 });

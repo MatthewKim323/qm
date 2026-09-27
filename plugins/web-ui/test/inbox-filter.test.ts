@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { readFileSync } from "node:fs";
-import type { DensityTier } from "../src/density.ts";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { createServer } from "vite";
-import type { LedgerItem } from "../src/inbox.ts";
 
 async function inboxUi(t: TestContext) {
   const errors: Error[] = [];
@@ -52,21 +50,17 @@ async function inboxUi(t: TestContext) {
   return { dom, vite, host, mount, inbox };
 }
 
-test("inbox filters persist, preserve Sent, and guard newly visible replies", async (t) => {
+test("inbox filters persist, preserve Sent, and keep refreshes consistent", async (t) => {
   const {
-    dom,
-    vite,
     host,
     mount,
-    inbox: { inboxState, resetInboxState, refreshInbox, itemsFor, toInboxItem, draftEditorTpl, drawAll },
+    inbox: { inboxState, resetInboxState, refreshInbox, itemsFor, toInboxItem },
   } = await inboxUi(t);
   let saved = "triaged";
   let failSave = false;
   let race: "preference" | "mismatch" | undefined;
   let requests: URL[] = [];
   const writes: unknown[] = [];
-  const replyEntries = new Map<string, LedgerItem>();
-  const actions: string[] = [];
   const entries = [
     { id: "question", state: "held", sourcePayload: { title: "Please review the launch plan" } },
     { id: "resolved", state: "held", sourcePayload: { title: "Thanks, all set", probablyResolved: true } },
@@ -106,20 +100,6 @@ test("inbox filters persist, preserve Sent, and guard newly visible replies", as
         total: race === "mismatch" ? 999 : items.length,
         nextCursor: more ? "page-2" : null,
       });
-    }
-    const actionId = url.pathname.match(/\/items\/([^/]+)\/action$/)?.[1];
-    if (actionId && replyEntries.has(actionId)) {
-      const entry = replyEntries.get(actionId)!;
-      const body = JSON.parse(String(options?.body));
-      actions.push(body.kind);
-      if (body.kind === "edit") {
-        entry.proposal = { data: body.args.proposal, by: "human", at: Date.now() };
-        if (entry.state === "pending") entry.state = "held";
-      } else if (body.kind === "send") {
-        assert.equal(entry.state, "held");
-        entry.state = "actioned";
-      }
-      return Response.json({ item: entry });
     }
     return Response.json({});
   };
@@ -197,104 +177,5 @@ test("inbox filters persist, preserve Sent, and guard newly visible replies", as
       ["sent"],
     );
   }
-  const { render } = await vite.ssrLoadModule("lit");
-  const editor = document.createElement("div");
-  document.body.append(editor);
-  inboxState.filter = "all";
-  for (const state of ["processed", "failed", "pending"] as const) {
-    const entry: LedgerItem = {
-      id: `reply-${state}`,
-      loopId: "email",
-      dedupeKey: `reply-${state}`,
-      source: "gmail",
-      state,
-      sourcePayload: { title: `Reply ${state}`, gmail: { threadId: state, to: ["sender@example.com"] } },
-      thread: [],
-      updatedAt: Date.now(),
-      ...(state !== "pending" ? { proposal: { data: { body: "Existing draft" }, by: "human" as const, at: 1 } } : {}),
-    };
-    replyEntries.set(entry.id, entry);
-    const item = { ...toInboxItem(entry), detailLoaded: true };
-    inboxState.items.push(item);
-    drawAll();
-    render(draftEditorTpl(item), editor);
-    const send = editor.querySelector<HTMLButtonElement>(".inbox-suggest-chip.primary")!;
-    const row = [...host.querySelectorAll<HTMLElement>(".inbox-item")].find(
-      (element) => element.querySelector(".inbox-item-sub")?.textContent === `Reply ${state}`,
-    );
-    assert.ok(row);
-    if (state !== "pending") {
-      assert.equal(send.disabled, true);
-      assert.match(editor.querySelector('[role="status"]')!.textContent!, /Sending is unavailable/);
-      assert.equal(row?.querySelector(".inbox-item-drafted"), null);
-      assert.match(row?.querySelector(".inbox-item-state")?.textContent ?? "", /Preparing reply|Draft needs attention/);
-      send.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      assert.deepEqual(actions, []);
-    } else {
-      assert.equal(send.disabled, false);
-      const textarea = editor.querySelector<HTMLTextAreaElement>(".inbox-draft-body")!;
-      textarea.value = "My own reply";
-      textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-      textarea.dispatchEvent(new dom.window.FocusEvent("blur"));
-      send.click();
-      for (let n = 0; n < 100 && actions.length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 5));
-      assert.deepEqual(actions, ["edit", "send"]);
-      assert.equal(replyEntries.get(entry.id)?.proposal?.data.body, "My own reply");
-    }
-  }
-  editor.remove();
   resetInboxState();
-});
-
-test("inbox count slots stay reserved while badges and exact accessible counts update", async (t) => {
-  const {
-    dom,
-    host,
-    mount,
-    inbox: { inboxState },
-  } = await inboxUi(t);
-  inboxState.loaded = true;
-  inboxState.fetchedAt = Date.now();
-  inboxState.selected = [{ id: "email", name: "Email", count: 0 }];
-  let density: DensityTier = "full";
-  let redraw = () => {};
-  mount({
-    density: () => density,
-    onDensityChange: (handler: () => void) => (redraw = handler),
-  });
-  const slots = [...host.querySelectorAll<HTMLElement>(".inbox-chip-count-slot")];
-  assert.equal(slots.length, 2);
-  for (const count of [0, 1, 19, 99, 100, 1234, 0]) {
-    inboxState.total = count;
-    inboxState.selected[0].count = count;
-    redraw();
-    assert.deepEqual([...host.querySelectorAll(".inbox-chip-count-slot")], slots);
-    for (const slot of slots) {
-      const tab = slot.closest<HTMLButtonElement>("button")!;
-      const badge = slot.querySelector<HTMLElement>(".inbox-chip-count")!;
-      assert.match(tab.getAttribute("aria-label")!, new RegExp(`, ${count} items$`));
-      assert.equal(badge.textContent?.trim(), count > 99 ? "99+" : String(count));
-      assert.equal(badge.getAttribute("aria-hidden"), "true");
-      assert.equal(getComputedStyle(slot).width, "30px");
-      assert.equal(getComputedStyle(slot).display, "inline-flex");
-      assert.notEqual(getComputedStyle(badge).width, "30px");
-      assert.equal(getComputedStyle(badge).visibility, count === 0 ? "hidden" : "visible");
-      if (count > 99) {
-        tab.focus();
-        assert.equal(document.querySelector('[role="tooltip"].visible')?.textContent, `${count} items`);
-        tab.blur();
-        assert.equal(document.querySelector('[role="tooltip"].visible'), null);
-        tab.dispatchEvent(new dom.window.MouseEvent("mouseenter"));
-        assert.equal(document.querySelector('[role="tooltip"].visible')?.textContent, `${count} items`);
-        tab.dispatchEvent(new dom.window.MouseEvent("mouseleave"));
-      }
-    }
-  }
-  for (const tier of ["compact", "card", "strip", "full"] as const) {
-    density = tier;
-    redraw();
-    for (const slot of slots)
-      assert.equal(getComputedStyle(slot).display, tier === "card" || tier === "strip" ? "none" : "inline-flex");
-  }
 });

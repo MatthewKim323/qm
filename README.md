@@ -14,14 +14,13 @@ If you're an infra provider interested in offering a hosted version of QM, feel 
 
 Most agents are designed like personal assistants. You can make one work for a whole
 company, but it quickly gets complex. QM is designed for startups. Employees each get
-their own isolated workspace and work independently without affecting each other, and
-they can also collaborate with the agent in channels, group messages, and projects.
+their own isolated workspace, and can also collaborate with the agent in channels, group messages, and projects.
 
 Each person and each room has its own scoped memory, files, keychain view, permissions,
 crons, web apps, and durable sandbox.
 
 It's built with open source in mind. Pick your own harness and model and switch between
-them — Pi, OpenCode, Codex, and Claude Code all drive the same core, so a deployment
+them. Pi, OpenCode, Codex, and Claude Code all drive the same core, so a deployment
 isn't tied to any single vendor.
 
 ## Features
@@ -30,13 +29,12 @@ isn't tied to any single vendor.
   work with it collaboratively in Slack channels and projects.
 - **Slack and web.** The same identity and configuration carries between Slack and the
   web app.
-- **Admin control.** Set org-level configuration, security and sharing postures, and which
+- **Admin control.** Set org-level configuration, security and sharing postures. Choose which
   harnesses and models are available.
 - **Web apps.** Spin up custom internal apps and publish them to the right people.
 - **Shared skills.** Skills are scope-owned and shareable by grant, with admin-gated
   promotion to the whole org and skill packs imported from git repositories.
-- **Background work.** Crons, watches, and inbound webhooks run work while nobody's
-  watching.
+- **Background work.** Crons, watches, and inbound webhooks work while you're away.
 
 ## What you can do with it
 
@@ -105,7 +103,11 @@ can only tighten:
 - **Auto** (default) — blocks private-network access and uses a content screener when
   the deployment configures one. Model screening is off by default; deployments can
   use an external proxy or explicitly opt into the built-in model classifier.
-- **Dangerous** — no content screening, no pauses between tool calls.
+- **Dangerous** — no posture-based content screening or tool approval gates.
+
+Deployments can set `securityScreen.allPostures: true` to require external-content
+screening under every posture, including Dangerous and Strict, without changing tool
+approvals or private-network policy. Flagged content still requires release approval.
 
 The predeclared command policy — approval rules and hard denials for things like
 recursive deletes or destructive SQL — applies in every posture, Dangerous included.

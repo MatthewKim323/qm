@@ -1,3 +1,4 @@
+import { externalSlackRequestAllowed } from "../resolution/external-slack.ts";
 import { availableRuntimeError, runtimeConfigBody } from "./runtime-config.ts";
 import type { Run } from "../runs/run-store.ts";
 import { userRuntimeConfigBody } from "./runtime-config.ts";
@@ -11,7 +12,7 @@ import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import { isTerminal, leaseLapsed } from "../runs/run-store.ts";
 import type { SessionStateEvent } from "../runs/session-state-bus.ts";
-import { turnModelOptions, validateWebTurnModelOptions } from "../core/turn-options.ts";
+import { turnModelOptions, turnRuntimePurpose, validateWebTurnModelOptions } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
 import { samePerson } from "../directory/person.ts";
 import {
@@ -60,6 +61,7 @@ export function createTurnMethods(
   | "listSessionApprovals"
   | "pendingApprovalForThread"
   | "getRun"
+  | "getRunToolEntries"
   | "subscribeRun"
   | "syncRunStream"
   | "activeRunForThread"
@@ -98,6 +100,14 @@ export function createTurnMethods(
   return {
     async turn(req: TurnRequest, replay?: { signalDedupKey: string }): Promise<TurnResult> {
       const startedAt = performance.now();
+      const historicalSlack = Object.keys(deps.externalSlackPolicies ?? {}).length
+        ? (await deps.sessions.getByThread(req.conversation.threadRef))?.surface === "slack"
+        : false;
+      if (!externalSlackRequestAllowed(req, deps.externalSlackPolicies, historicalSlack))
+        return {
+          status: "refused",
+          reason: "External Slack requests require their current authenticated source context.",
+        };
       await deps.refreshModels?.();
       await deps.identity.refresh();
       const actor: Principal = deps.identity.resolve(req.actor);
@@ -189,22 +199,39 @@ export function createTurnMethods(
       const origin = resolveTurnOrigin(privateRequest ?? req);
 
       const modelAccount =
-        deps.userModelCredentials && origin.kind === "human"
+        !req.externalSlack && deps.userModelCredentials && origin.kind === "human"
           ? await deps.config.getModelAccountDurable(actor.id)
           : "company";
       const individualAuth = modelAccount !== "company";
+      const runtimePurpose = turnRuntimePurpose(req, isSubagentThreadRef(req.conversation.threadRef));
       if (req.triggered && (req.model || req.harness)) {
-        const choices = await runtimeConfigBody({ deps }, conversationScope(req.conversation, actor.id));
+        const choices = await runtimeConfigBody(
+          { deps },
+          conversationScope(req.conversation, actor.id),
+          undefined,
+          runtimePurpose,
+          {
+            ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
+            ...(req.model ? { modelId: req.model } : {}),
+            ...(req.thinkingLevel ? { effortLevel: req.thinkingLevel } : {}),
+            ...(typeof req.fastMode === "boolean" ? { fastMode: req.fastMode } : {}),
+          },
+        );
         const harness = req.harness ?? choices.effective.harnessId;
         const model = req.model ?? choices.effective.modelId;
         const error = !isHarnessId(harness)
           ? "harness_not_approved"
-          : await availableRuntimeError({ deps }, conversationScope(req.conversation, actor.id), {
-              harnessId: harness,
-              modelId: model,
-              effortLevel: req.thinkingLevel,
-              fastMode: req.fastMode,
-            });
+          : await availableRuntimeError(
+              { deps },
+              conversationScope(req.conversation, actor.id),
+              {
+                harnessId: harness,
+                modelId: model,
+                effortLevel: req.thinkingLevel,
+                fastMode: req.fastMode,
+              },
+              runtimePurpose,
+            );
         if (error) return { status: "refused", reason: error };
       }
       let requestedModel = req.model;
@@ -253,10 +280,20 @@ export function createTurnMethods(
             orgRuntime = modelUnavailableReason(orgModel)
               ? { harnessId: storedOrgRuntime?.harnessId ?? runtimeFallback.harnessId, modelId: orgModel }
               : await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback);
-            runtime = await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, {
-              ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
-              ...(req.model ? { modelId: req.model } : {}),
-            });
+            runtime = await resolveRuntimeChoiceDurable(
+              deps.config,
+              org,
+              targetScope,
+              runtimeFallback,
+              {
+                ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
+                ...(req.model ? { modelId: req.model } : {}),
+                ...(req.thinkingLevel ? { effortLevel: req.thinkingLevel } : {}),
+                ...(typeof req.fastMode === "boolean" ? { fastMode: req.fastMode } : {}),
+              },
+              undefined,
+              runtimePurpose,
+            );
           } catch (error) {
             swallow("turn: runtime resolution", error);
             return { status: "refused", reason: `I couldn't set up that runtime choice — ${GENERIC_FAILURE_CLAUSE}` };
@@ -329,6 +366,8 @@ export function createTurnMethods(
 
       const input = {
         surface: req.surface,
+        ...(req.slackSource ? { slackSource: req.slackSource } : {}),
+        ...(req.externalSlack ? { externalSlack: req.externalSlack } : {}),
         ...(sameApprovedMessage && approvedRequest?.sessionSenderId
           ? { sessionSenderId: approvedRequest.sessionSenderId }
           : {}),
@@ -366,6 +405,7 @@ export function createTurnMethods(
         ...(req.unattendedGrants?.length ? { unattendedGrants: req.unattendedGrants } : {}),
         ...(req.botActor ? { botActor: true } : {}),
         ...(req.surfaceTools ? { surfaceTools: true } : {}),
+        ...(req.clientTools?.length ? { clientTools: req.clientTools } : {}),
         ...(req.envelopeWrapped ? { envelopeWrapped: true } : {}),
         ...(typeof req.displayText === "string" && req.displayText ? { displayText: req.displayText } : {}),
         ...(req.addressed || origin.kind === "human" ? { addressed: true } : {}),
@@ -526,7 +566,7 @@ export function createTurnMethods(
         }
       }
 
-      const spineRouted = !req.approval && shouldRouteToSpine(request as OrchestratorInput);
+      const spineRouted = !req.externalSlack && !req.approval && shouldRouteToSpine(request as OrchestratorInput);
       if (spineRouted) {
         request = { ...input, surfaceTools: true };
         if (origin.kind !== "ambient")
@@ -727,6 +767,24 @@ export function createTurnMethods(
       };
     },
 
+    async getRunToolEntries(runId, viewer, afterSeq) {
+      const run = await deps.runs.get(runId);
+      if (!run || run.turnUserSeq === null) return [];
+      if (viewer && !(await viewerMayUseRun(run, viewer))) return [];
+      const session = await deps.sessions.getByThread(run.sessionId);
+      if (!session) return [];
+      const entries = await deps.sessions.getEntries(session.id, {
+        sinceSeq: Math.max(run.turnUserSeq, (afterSeq ?? -1) + 1),
+      });
+      const nextRun = entries.findIndex((e) => {
+        const owner = (e.payload as { runId?: unknown } | null)?.runId;
+        return e.type === "user" && typeof owner === "string" && owner !== runId;
+      });
+      return entries
+        .slice(0, nextRun < 0 ? undefined : nextRun)
+        .filter((e) => e.type === "tool_call" || e.type === "tool_result");
+    },
+
     async stopConversation(threadRef, viewer) {
       const stop = async () => {
         const session = await deps.sessions.getByThread(threadRef);
@@ -789,6 +847,17 @@ export function createTurnMethods(
       if (signal.kind === "abort") {
         const accepted = await stopRunTree(run);
         return accepted ? { accepted: true } : { accepted: false, reason: "terminal" };
+      }
+      if (signal.kind === "client_result") {
+        if (viewer && !samePerson(run.request.actor.id, viewer)) return { accepted: false, reason: "not_found" };
+        if (!run.request.clientTools?.length) return { accepted: false, reason: "no_client_tools" };
+        const sent = await deps.signals.send(runId, {
+          kind: "client_result",
+          callId: signal.callId,
+          result: signal.result,
+          dedupeKey: `client:${runId}:${signal.callId}`,
+        });
+        return sent ? { accepted: true } : { accepted: false, reason: "duplicate" };
       }
       if (signal.queuedRunId) {
         const queued = await deps.runs.get(signal.queuedRunId);

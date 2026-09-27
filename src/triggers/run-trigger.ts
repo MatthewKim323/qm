@@ -40,7 +40,7 @@ export interface TriggerDeps {
   sessions?: { listByParticipant(principalId: string): Promise<readonly { scopeId: ScopeId }[]> };
 }
 
-export interface TriggerSpec {
+export interface TriggerSpec extends Pick<TurnRequest, "model" | "harness" | "fastMode" | "attachments"> {
   runtime?: import("../harness/harness.ts").RuntimeChoice | null;
   title?: string;
   owner: string;
@@ -335,9 +335,13 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
         ...(spec.runtime ? { model: spec.runtime.modelId, harness: spec.runtime.harnessId } : {}),
         ...turnModelOptions({
           triggered: true,
+          surface: spec.surface,
           thinkingLevel: spec.runtime?.effortLevel ?? spec.thinkingLevel,
-          fastMode: spec.runtime?.fastMode,
+          fastMode: spec.fastMode ?? spec.runtime?.fastMode,
         }),
+        ...(spec.model ? { model: spec.model } : {}),
+        ...(spec.harness ? { harness: spec.harness } : {}),
+        ...(spec.attachments?.length ? { attachments: spec.attachments } : {}),
         ...(spec.readOnly ? { readOnly: true } : {}),
         ...(typeof spec.turnWallClockMs === "number" ? { turnWallClockMs: spec.turnWallClockMs } : {}),
         ...(spec.destination ? { triggerDestination: spec.destination } : {}),

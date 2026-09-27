@@ -317,7 +317,7 @@ export function sentMailTpl(
                   <span class="inbox-item-snippet">${plainSnippet(message.snippet)}</span>
                 </span>
                 <span class="inbox-item-side"
-                  ><span class="inbox-item-time" aria-description=${new Date(message.sentAt).toLocaleString()}
+                  ><span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString()}
                     >${relTime(message.sentAt)}</span
                   >${icon(ChevronRight, 13)}</span
                 >
@@ -336,9 +336,7 @@ function sentMessageTpl(entry: SentThreadMessage): TemplateResult {
     <div class="inbox-context-body">
       <div class="inbox-context-head">
         <span class="inbox-context-author">${entry.from}</span>
-        <span class="inbox-context-at" aria-description=${new Date(entry.sentAt).toLocaleString()}
-          >${relTime(entry.sentAt)}</span
-        >
+        <span class="inbox-context-at" title=${new Date(entry.sentAt).toLocaleString()}>${relTime(entry.sentAt)}</span>
       </div>
       <div class="inbox-sent-recipients">
         To: ${entry.to}${entry.cc ? html`<span> · Cc: ${entry.cc}</span>` : nothing}
@@ -386,7 +384,7 @@ export function sentEmailPageTpl(
           <span>To: ${message.to || "Undisclosed recipients"}</span>
           <span class="inbox-item-head-meta">
             <span class="inbox-item-state">Sent</span>
-            <span class="inbox-item-time" aria-description=${new Date(message.sentAt).toLocaleString()}
+            <span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString()}
               >${relTime(message.sentAt)}</span
             >
           </span>
@@ -416,8 +414,8 @@ export function sentEmailPageTpl(
             ${icon(ArrowUpRight, 12)}<span>Open in Gmail</span>
           </a>
         </div>
+        ${aside ?? nothing}
       </div>
     </div>
-    ${aside ? html`<aside class="inbox-item-aside">${aside}</aside>` : nothing}
   `;
 }

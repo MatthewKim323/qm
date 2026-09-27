@@ -14,6 +14,7 @@ import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner
 import { CapabilityUnsupportedError, hasParentPathSegment, supportsAgentComputerExport } from "../sandbox/sandbox.ts";
 import type {
   ApprovalGrantModes,
+  ClientToolResult,
   CommandPolicy,
   CommandRule,
   ConversationKind,
@@ -40,6 +41,7 @@ import type {
 } from "../sessions/session-syscalls.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createNullLedger, type ToolLedger } from "../runs/tool-ledger.ts";
+import { waitForClientResult, type RunSignalStore } from "../runs/run-signal-store.ts";
 import type {
   BackgroundExecBroker,
   BackgroundStartResult,
@@ -237,6 +239,11 @@ export interface ToolContext extends SurfaceToolDeps {
   historyOpen(seq: number): Promise<string | null>;
   mcpToolDefs(): McpToolDescriptor[];
   callMcpTool(name: string, args: Record<string, unknown>): Promise<string>;
+  awaitClientResult(
+    callId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<ClientToolResult | "timeout" | "cancelled">;
   backgroundStart(command: string, opts?: { ttlSeconds?: number; sandboxId?: string }): Promise<BackgroundStartResult>;
   backgroundPoll(
     processId: string,
@@ -299,6 +306,7 @@ export interface ToolContext extends SurfaceToolDeps {
   soulRead(): { effectiveSoul: string; soul: string | null; soulVersion: number } | ControlUnavailable;
   soulWrite(
     content: string,
+    expectedVersion?: number,
   ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied"> | ControlUnavailable>;
   shareArtifact(req: ShareArtifactRequest): Promise<ShareArtifactResult | ControlUnavailable>;
 }
@@ -415,11 +423,11 @@ export interface SurfaceToolDeps {
   readFile(ref: string): Promise<SurfaceFileResult>;
   getStandingOrder(): Promise<SurfaceStandingOrderResult>;
   setStandingOrder(
-    orders: string,
+    orders: string | undefined,
     bots?: Record<string, BotPolicy>,
     ambientEnabled?: boolean | null,
+    expectedOrders?: string,
   ): Promise<SurfaceStandingOrderResult>;
-  staySilent(reason: string): Promise<{ ok: true; message: string }>;
 }
 
 export interface ControlUnavailable {
@@ -499,6 +507,7 @@ export interface ToolContextDeps {
   execTimeoutMs?: number;
   execTimeoutCeilingMs?: number;
   ledger?: ToolLedger;
+  signals?: RunSignalStore;
   runId?: string;
   attempt?: number;
   backgroundBroker?: BackgroundExecBroker;
@@ -1234,6 +1243,11 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       return deps.mcp.call(name, args, deps.createdBy);
     },
 
+    async awaitClientResult(callId, timeoutMs, signal) {
+      if (!deps.signals || runId === undefined) throw new Error("client tools need a queued run");
+      return waitForClientResult(deps.signals, runId, callId, { timeoutMs, ...(signal ? { signal } : {}) });
+    },
+
     async backgroundStart(
       command: string,
       opts?: { ttlSeconds?: number; sandboxId?: string },
@@ -1368,9 +1382,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (!deps.control || !deps.controlClaims) return CONTROL_UNAVAILABLE;
       return deps.control.readSoul(deps.controlClaims);
     },
-    soulWrite: (content) =>
+    soulWrite: (content, expectedVersion) =>
       controlOp(
-        async (c, cl) => c.writeSoul(content, cl),
+        async (c, cl) => c.writeSoul(content, cl, expectedVersion),
         (r) => r.ok,
       ),
     shareArtifact: (req) =>
@@ -1410,12 +1424,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     readMembers: () => surfaceOp((s) => s.readMembers()),
     readFile: (ref) => surfaceOp((s) => s.readFile(ref)),
     getStandingOrder: () => surfaceOp((s) => s.getStandingOrder()),
-    setStandingOrder: (orders, bots, ambientEnabled) =>
-      surfaceOp((s) => s.setStandingOrder(orders, bots, ambientEnabled)),
-    staySilent: (reason) =>
-      deps.surface
-        ? deps.surface.staySilent(reason)
-        : Promise.resolve({ ok: true as const, message: "[staying silent]" }),
+    setStandingOrder: (orders, bots, ambientEnabled, expectedOrders) =>
+      surfaceOp((s) => s.setStandingOrder(orders, bots, ambientEnabled, expectedOrders)),
     attach: (files) =>
       deps.attach ? deps.attach(files) : Promise.resolve({ ok: false as const, message: ATTACH_UNAVAILABLE_MESSAGE }),
   };

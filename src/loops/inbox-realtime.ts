@@ -62,6 +62,7 @@ export function createInboxRealtime(deps: InboxRealtimeDeps): {
             if (ownerReplied) {
               await deps.items.recordAction(item.id, {
                 kind: "replied",
+                sourceAt: event.at,
                 outcome: "dismissed",
                 ...(event.text ? { result: event.text.slice(0, MAX_REPLY_CHARS) } : {}),
               });
@@ -76,8 +77,6 @@ export function createInboxRealtime(deps: InboxRealtimeDeps): {
                   sourceAt: event.at,
                   sourcePayload: {
                     ...item.sourcePayload,
-                    automated: undefined,
-                    probablyResolved: undefined,
                     ...(snippet ? { snippet } : {}),
                     receivedAt: event.at,
                   },
