@@ -1,0 +1,15 @@
+{
+  "id": "evt_01J8MATTHEWFEAT01",
+  "type": "feature_request.detected",
+  "ts": "2026-09-27T21:30:00Z",
+  "source": "manual",
+  "confidence": 0.91,
+  "people": [{ "id": "matthew", "name": "Matthew", "enrolled": true }],
+  "project": "syla",
+  "payload": {
+    "product": "Canvas",
+    "feature": "onboarding",
+    "request": "Let me import my existing Google Calendar during onboarding instead of recreating every event by hand",
+    "requested_by": "matthew"
+  }
+}
