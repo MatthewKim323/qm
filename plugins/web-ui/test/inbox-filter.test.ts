@@ -52,6 +52,7 @@ async function inboxUi(t: TestContext) {
 
 test("inbox filters persist, preserve Sent, and keep refreshes consistent", async (t) => {
   const {
+    dom,
     host,
     mount,
     inbox: { inboxState, resetInboxState, refreshInbox, itemsFor, toInboxItem },
@@ -111,38 +112,40 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
     }
     assert.fail("inbox did not settle");
   };
-  const button = (label: string) =>
-    [...host.querySelectorAll<HTMLButtonElement>(".inbox-filters button")].find(
-      (element) => element.textContent?.trim() === label,
-    )!;
+  const filterSelect = () => host.querySelector<HTMLSelectElement>('select[aria-label="Inbox filter"]')!;
+  const chooseFilter = (value: string) => {
+    const select = filterSelect();
+    select.value = value;
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  };
   const titles = () => [...host.querySelectorAll(".inbox-item-sub")].map((item) => item.textContent?.trim());
-  const assertPillCounts = () => {
+  const assertTabCounts = () => {
     assert.deepEqual(
       [...host.querySelectorAll(".inbox-chip-count")].map((badge) => badge.textContent?.trim()),
       ["4", "4"],
     );
   };
   await settled();
-  assertPillCounts();
+  assertTabCounts();
   assert.deepEqual(
-    [...host.querySelectorAll(".inbox-filters button")].map((element) => element.textContent?.trim()),
-    ["Loop triaged", "Only human", "All emails"],
+    [...host.querySelectorAll(".inbox-filter option")].map((element) => element.textContent?.trim()),
+    ["Loop triaged", "Only human", "All messages"],
   );
-  assert.equal(button("Loop triaged").getAttribute("aria-pressed"), "true");
+  assert.equal(filterSelect().value, "triaged");
   assert.deepEqual(titles(), ["Please review the launch plan"]);
-  button("Only human").click();
+  chooseFilter("human");
   await settled();
-  assertPillCounts();
+  assertTabCounts();
   assert.deepEqual(titles(), ["Please review the launch plan", "Thanks, all set", "Quick question"]);
-  button("All emails").click();
+  chooseFilter("all");
   await settled();
-  assertPillCounts();
+  assertTabCounts();
   assert.equal(titles().length, 4);
-  assert.equal(button("All emails").getAttribute("aria-pressed"), "true");
+  assert.equal(filterSelect().value, "all");
   assert.deepEqual(writes, ["human", "all"]);
   resetInboxState();
   await refreshInbox();
-  assert.equal(button("All emails").getAttribute("aria-pressed"), "true");
+  assert.equal(filterSelect().value, "all");
   assert.equal(titles().length, 4);
   race = "preference";
   requests = [];
@@ -173,9 +176,9 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   saved = "all";
   await refreshInbox();
   failSave = true;
-  button("Loop triaged").click();
+  chooseFilter("triaged");
   await settled();
-  assert.equal(button("All emails").getAttribute("aria-pressed"), "true");
+  assert.equal(filterSelect().value, "all");
   inboxState.items.push(
     toInboxItem({ ...entries[0], id: "sent", state: "actioned", sourcePayload: { automated: true } }),
   );

@@ -172,7 +172,7 @@ function inboxViewSegment(viewId: string): string {
 const INBOX_FILTERS = [
   { id: "triaged", label: "Loop triaged", description: "Messages the Loop identified as needing your attention" },
   { id: "human", label: "Only human", description: "Human conversations, including those that need no reply" },
-  { id: "all", label: "All emails", description: "All synced messages, including automated mail and bots" },
+  { id: "all", label: "All messages", description: "All synced messages, including automated mail and bots" },
 ] as const;
 
 type InboxFilter = (typeof INBOX_FILTERS)[number]["id"];
@@ -1556,7 +1556,7 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
   const openItems = itemsFor(surface.viewId, "open");
   let emptyMessage = "No messages in this view yet. Sync to check for new messages.";
   if (inboxState.filter === "triaged")
-    emptyMessage = "Nothing is waiting on you. Choose Only human or All emails to see more.";
+    emptyMessage = "Nothing is waiting on you. Choose Only human or All messages to see more.";
   if (surface.viewId === "sent") emptyMessage = "No sent messages yet. Sent Email and Slack replies will appear here.";
   const handledItems = itemsFor(surface.viewId, "handled");
   const setupLoops = inboxState.selected.filter(
@@ -1582,33 +1582,6 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
           ${v.id === "all" ? nothing : loopIcon(inboxState.selected.find((loop) => loop.id === v.id) ?? {})}<span>${v.name}</span>${count > 0 ? html`<span class="inbox-chip-count">${count}</span>` : nothing}
         </button>`;
       })}
-      ${
-        surface.viewId !== "all" && surface.viewId !== "sent"
-          ? html`<button
-              class="icon-btn subtle compact"
-              aria-label=${`Options for ${inboxViewName(surface.viewId)}`}
-              @click=${() => {
-                inboxState.menuId = inboxState.menuId === surface.viewId ? null : surface.viewId;
-                drawAll();
-              }}
-            >
-              ${icon(MoreHorizontal, 16)}
-            </button>`
-          : nothing
-      }
-      <button
-        class="inbox-chip inbox-add-loop"
-        type="button"
-        aria-label="Add Loop"
-        aria-expanded=${inboxState.picker}
-        @click=${() => {
-          inboxState.picker = !inboxState.picker;
-          drawAll();
-        }}
-      >
-        ${icon(Plus, 16)}
-      </button>
-      <span class="inbox-chip-divider" aria-hidden="true"></span>
       <button
         class="inbox-chip ${surface.viewId === "sent" ? "active" : ""}"
         type="button"
@@ -1623,6 +1596,34 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
       >
         Sent
       </button>
+    </div>
+    <div class="inbox-view-actions">
+      <button
+        class="icon-btn subtle compact inbox-add-loop"
+        type="button"
+        aria-label="Add Loop"
+        aria-expanded=${inboxState.picker}
+        @click=${() => {
+          inboxState.picker = !inboxState.picker;
+          drawAll();
+        }}
+      >
+        ${icon(Plus, 16)}
+      </button>
+      ${
+        surface.viewId !== "all" && surface.viewId !== "sent"
+          ? html`<button
+              class="icon-btn subtle compact"
+              aria-label=${`Options for ${inboxViewName(surface.viewId)}`}
+              @click=${() => {
+                inboxState.menuId = inboxState.menuId === surface.viewId ? null : surface.viewId;
+                drawAll();
+              }}
+            >
+              ${icon(MoreHorizontal, 16)}
+            </button>`
+          : nothing
+      }
     </div>
   `;
   const list = html`
@@ -1668,21 +1669,21 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
         surface.viewId !== "sent"
           ? html`
               <div class="inbox-filter-bar">
-                <div class="inbox-filters" role="group" aria-label="Inbox filter">
-                  ${INBOX_FILTERS.map(
-                    (filter) => html`
-                      <button
-                        type="button"
-                        aria-pressed=${inboxState.filter === filter.id}
-                        aria-description=${filter.description}
-                        ?disabled=${inboxState.filterBusy || inboxState.loading}
-                        @click=${() => void selectInboxFilter(filter.id)}
-                      >
-                        ${filter.label}
-                      </button>
-                    `,
-                  )}
-                </div>
+                <label class="inbox-filter">
+                  <span>Show</span>
+                  <span class="inbox-filter-control">
+                    <select
+                      aria-label="Inbox filter"
+                      aria-description=${INBOX_FILTERS.find((filter) => filter.id === inboxState.filter)?.description ?? ""}
+                      .value=${live(inboxState.filter)}
+                      ?disabled=${inboxState.filterBusy || inboxState.loading}
+                      @change=${(event: Event) => void selectInboxFilter((event.target as HTMLSelectElement).value as InboxFilter)}
+                    >
+                      ${INBOX_FILTERS.map((filter) => html`<option value=${filter.id}>${filter.label}</option>`)}
+                    </select>
+                    ${icon(ChevronDown, 13)}
+                  </span>
+                </label>
               </div>
             `
           : nothing

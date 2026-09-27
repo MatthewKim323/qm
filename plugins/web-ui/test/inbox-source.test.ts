@@ -77,7 +77,7 @@ test("the address keeps naming the open item, even after switchView writes the b
   assert.match(inbox, /if \(appState\.currentView !== "inbox"\) return;/, "and never writes from another view");
 });
 
-test("inbox pills own stable routes that survive refresh and history navigation", () => {
+test("inbox tabs own stable routes that survive refresh and history navigation", () => {
   assert.match(inbox, /itemId \?\? inboxViewSegment\(fullViewId\)/);
   assert.match(inbox, /if \(segment === "email"\) return "gmail"/);
   assert.match(inbox, /if \(surface === fullSurface\) selectInboxView\(v\.id, true\)/);
@@ -223,7 +223,6 @@ test("inbox dividers do not collide with rounded hovered rows", () => {
     /\.inbox-item:hover::after,\s*\.inbox-item:has\(\+ \.inbox-item:hover\)::after \{\s*background: transparent;/,
   );
   assert.doesNotMatch(css, /\.inbox-item \{\s*border-bottom:/);
-  assert.match(css, /\.inbox-page \.inbox-toolbar \{\s*padding: 8px 0;\s*border-bottom: 0;/);
 });
 
 test("clipped email snippets do not trigger a native hover tooltip", () => {
