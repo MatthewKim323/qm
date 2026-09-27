@@ -17,6 +17,7 @@ import {
   TITLE_GENERATION_PROMPT,
 } from "../../src/harness/pi-harness.ts";
 import { setProviderBaseUrls } from "../../src/model/provider-endpoints.ts";
+import { extractFacts, MEMORY_EXTRACTION_PROMPT } from "../../src/memory/strategies/per-turn.ts";
 import { auxiliaryModelForProvider, resolveModel } from "../../src/model/pi-models.ts";
 import { companionReply, createWorkloadCompanion, promptSha256, type CompanionProfile } from "./workload-companion.ts";
 import { turnMarker, type ProviderProfile } from "./workload-provider.ts";
@@ -108,6 +109,110 @@ function user(content: string) {
 function loopPrompt(stage: string, marker: string) {
   return `[Loop ${stage}]\nSynthetic fixture only\n[End loop ${stage}]\n${marker}`;
 }
+
+test("native memory extraction receipts bind the full transcript and ordered declared markers without plaintext", async () => {
+  const memorySystem = `${MEMORY_EXTRACTION_PROMPT}\nCurrent working directory: ${stableCwd("pi-oneshot")}`;
+  const memoryProfile: CompanionProfile = {
+    ...profile,
+    utilities: [
+      {
+        name: "memory",
+        model: modelId,
+        systemSha256: promptSha256(memorySystem),
+        response: "NONE",
+        receipt: "memory-extraction",
+        ...pacing,
+      },
+    ],
+    nativeShapes: [
+      {
+        name: "human",
+        model: modelId,
+        modelCalls: 1,
+        toolCalls: 0,
+        batches: [],
+        operations: [],
+        outputBytes: 32,
+        repeatedFraction: 0,
+        terminal: "reply",
+        ...pacing,
+      },
+    ],
+  };
+  const turns = [0, 1].map((index) => ({
+    input: `${nativeMarker(fixture.fixtureId, "human", `owned.${index}`)}\nSynthetic user fact ${index}`,
+    reply: `Synthetic reply ${index}`,
+  }));
+  const transcript = turns
+    .map((turn) => `User said:\n${turn.input}\n\nAssistant replied:\n${turn.reply}`)
+    .join("\n\n---\n\n");
+  const records: Record<string, unknown>[] = [];
+  const companion = await createWorkloadCompanion(memoryProfile, provider, fixture, (record) => records.push(record), {
+    QM_PERF_TEST_TOKEN: token,
+  });
+  companion.server.listen(0, "127.0.0.1");
+  await once(companion.server, "listening");
+  const address = companion.server.address();
+  assert.ok(address && typeof address !== "string");
+  setProviderBaseUrls({ anthropic: `http://127.0.0.1:${address.port}` });
+  const harness = createPiHarness({ defaultModelId: modelId, apiKey: token });
+  try {
+    assert.deepEqual(await extractFacts(harness.models, turns), []);
+    const calls = records.filter((record) => record.type === "companion-call");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.error, null);
+    assert.deepEqual(calls[0]!.memory, {
+      userTextSha256: promptSha256(transcript),
+      markerSha256: turns.map((_, index) => promptSha256(nativeMarker(fixture.fixtureId, "human", `owned.${index}`))),
+    });
+    assert.equal(
+      records.some((record) => record.type === "companion-start"),
+      false,
+    );
+    const logged = JSON.stringify(records);
+    assert.ok(
+      !logged.includes("Synthetic user fact") &&
+        !logged.includes("Synthetic reply") &&
+        !logged.includes("[qm-perf-native:"),
+    );
+    for (const content of [
+      "No marker",
+      Array.from({ length: 11 }, (_, index) => nativeMarker(fixture.fixtureId, "human", String(index))).join("\n"),
+      `${turns[0]!.input}\n${turns[0]!.input}`,
+      nativeMarker("foreign", "human", "owned"),
+      nativeMarker(fixture.fixtureId, "unknown", "owned"),
+      `${turns[0]!.input}\n[qm-perf-native:malformed]`,
+    ])
+      assert.throws(() =>
+        companionReply({ model: modelId, system: memorySystem, messages: [user(content)] }, memoryProfile),
+      );
+    const unannotated = structuredClone(memoryProfile);
+    delete unannotated.utilities[0]!.receipt;
+    assert.equal(
+      "memory" in companionReply({ model: modelId, system: memorySystem, messages: [user(transcript)] }, unannotated)!,
+      false,
+    );
+    for (const utility of [
+      { ...memoryProfile.utilities[0]!, receipt: "unknown" },
+      { ...memoryProfile.utilities[0]!, response: "- A fact" },
+    ]) {
+      await assert.rejects(
+        createWorkloadCompanion(
+          { ...memoryProfile, utilities: [utility] } as CompanionProfile,
+          provider,
+          fixture,
+          () => {},
+          { QM_PERF_TEST_TOKEN: token },
+        ),
+        /Memory receipt requires/,
+      );
+    }
+  } finally {
+    await harness.turns.close?.();
+    await companion.close();
+    setProviderBaseUrls({});
+  }
+});
 
 test("native admission precedes pacing and retains exact successful or aborted response identity", async () => {
   for (const cancel of [false, true]) {

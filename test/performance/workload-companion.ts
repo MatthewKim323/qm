@@ -30,7 +30,15 @@ export interface CompanionProfile {
   host: string;
   port: number;
   tokenEnv: string;
-  utilities: Array<ResponsePacing & { name: string; model: string; systemSha256: string; response: string }>;
+  utilities: Array<
+    ResponsePacing & {
+      name: string;
+      model: string;
+      systemSha256: string;
+      response: string;
+      receipt?: "memory-extraction";
+    }
+  >;
   loop?: ResponsePacing & { model: string; shipAction: string };
   materialize?: MaterializeShape;
   nativeShapes?: NativeShape[];
@@ -72,7 +80,23 @@ export function companionReply(body: Record<string, unknown>, profile: Companion
       body.tools === undefined || (Array.isArray(body.tools) && body.tools.length === 0),
       "Utility tools forbidden",
     );
-    return { rule: utility.name, systemSha256, text: utility.response, pacing: utility };
+    let memory: { userTextSha256: string; markerSha256: string[] } | undefined;
+    if (utility.receipt === "memory-extraction") {
+      const markers = [...latest.matchAll(/\[qm-perf-native:([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)\]/g)];
+      workloadCheck(
+        markers.length >= 1 &&
+          markers.length <= 10 &&
+          markers.length === latest.split("[qm-perf-native:").length - 1 &&
+          markers.every(
+            (match) => match[1] === profile.fixtureId && profile.nativeShapes?.some((shape) => shape.name === match[2]),
+          ),
+        "Memory receipt requires 1–10 exact declared native markers",
+      );
+      const markerSha256 = markers.map((match) => promptSha256(match[0]));
+      workloadCheck(new Set(markerSha256).size === markerSha256.length, "Duplicate memory marker");
+      memory = { userTextSha256: promptSha256(latest), markerSha256 };
+    }
+    return { rule: utility.name, systemSha256, text: utility.response, pacing: utility, ...(memory ? { memory } : {}) };
   }
   const native = nativeReply(body, profile.fixtureId, profile.nativeShapes);
   if (native) return { ...native, systemSha256 };
@@ -188,6 +212,10 @@ function validateCompanion(
     workloadCheck(/^[a-zA-Z0-9_-]+$/.test(utility.name) && !names.has(utility.name), "Unique utility names required");
     names.add(utility.name);
     workloadCheck(/^[a-f0-9]{64}$/.test(utility.systemSha256), "Exact utility prompt SHA-256 required");
+    workloadCheck(
+      utility.receipt === undefined || (utility.receipt === "memory-extraction" && utility.response === "NONE"),
+      "Memory receipt requires the no-fact utility response",
+    );
     const pair = `${utility.model}:${utility.systemSha256}`;
     workloadCheck(!pairs.has(pair), "Duplicate utility prompt/model pair");
     pairs.add(pair);
@@ -320,6 +348,7 @@ export async function createWorkloadCompanion(
     let error: string | null = null;
     let streaming = false;
     let native: Record<string, unknown> | undefined;
+    let memory: { userTextSha256: string; markerSha256: string[] } | undefined;
     let loopCall: ReturnType<NonNullable<typeof loops>["begin"]> = null;
     let cronCall: ReturnType<NonNullable<typeof crons>["begin"]> = null;
     let responseComplete = false;
@@ -383,6 +412,7 @@ export async function createWorkloadCompanion(
       }
       ({ rule, systemSha256 } = reply);
       native = "native" in reply ? reply.native : undefined;
+      memory = "memory" in reply ? reply.memory : undefined;
       totals.calls++;
       const singleTool = "tool" in reply && reply.tool ? [reply.tool] : [];
       const tools = "tools" in reply ? reply.tools : singleTool;
@@ -516,6 +546,7 @@ export async function createWorkloadCompanion(
         responseId,
         streaming,
         ...(native ? { native } : {}),
+        ...(memory ? { memory } : {}),
         ...(loopCall ? { loop: { ...loopCall.reply.loop, responseComplete } } : {}),
         ...(cronCall ? { cron: { ...cronCall.reply.cron, responseComplete } } : {}),
         startedAt,

@@ -6,6 +6,7 @@ import { syntheticText, workloadCheck } from "./workload-provider.ts";
 export type NativeOperation =
   | { kind: "read"; path: string; bytes: number; sha256: string }
   | { kind: "sandbox"; sandboxId: string; bytes: number; seed: string; sleepMs: number }
+  | { kind: "sandbox-create"; ownerId: string; name: string }
   | { kind: "session-open"; name: string; shape: string; model: string }
   | { kind: "session-followup"; openOperation: number; shape: string };
 
@@ -89,6 +90,11 @@ export function nativeToolInput(
     return { name: "sessions", input: { action: "followup_task", target: opened.id, task } };
   }
   if (operation.kind === "read") return { name: "files", input: { action: "read", path: operation.path } };
+  if (operation.kind === "sandbox-create")
+    return {
+      name: "sandbox",
+      input: { action: "create", backend: "sprites", name: operation.name, purpose: "Prepare fixture sandbox" },
+    };
   const program = `import hashlib,sys,time; time.sleep(${operation.sleepMs}/1000); s="${operation.seed}"; n=${operation.bytes}; sys.stdout.write("".join(hashlib.sha256((s+":"+str(i)).encode()).hexdigest()+" " for i in range((n+64)//65))[:n]+"\\n")`;
   return {
     name: "sandbox",
@@ -138,6 +144,25 @@ export function validateNativeShapes(shapes: NativeShape[]): void {
       "Bounded native child operation count required",
     );
     for (const [index, operation] of shape.operations.entries()) {
+      if (operation.kind === "sandbox-create") {
+        workloadCheck(
+          shape.modelCalls === 2 &&
+            Object.keys(operation).length === 3 &&
+            shape.toolCalls === 1 &&
+            shape.batches.length === 1 &&
+            shape.batches[0] === 1 &&
+            shape.terminal === "reply" &&
+            !shape.recovery &&
+            typeof operation.ownerId === "string" &&
+            operation.ownerId.trim() === operation.ownerId &&
+            /^perf-[0-9]{5}@example\.invalid$/.test(operation.ownerId) &&
+            typeof operation.name === "string" &&
+            operation.name.trim() === operation.name &&
+            /^qm-perf-bootstrap-[A-Za-z0-9_-]{1,80}$/.test(operation.name),
+          "One standalone 2M/1T synthetic owner sandbox bootstrap required",
+        );
+        continue;
+      }
       if (childOperation(operation)) {
         workloadCheck(
           typeof shape.sessionTitle === "string" &&
@@ -218,6 +243,7 @@ export function validateNativeShapes(shapes: NativeShape[]): void {
           child.terminal === "reply" &&
           !child.recovery &&
           !child.operations.some(childOperation) &&
+          !child.operations.some((candidate) => candidate.kind === "sandbox-create") &&
           child.outputBytes <= 16000 &&
           child.outputBytes - Math.floor(child.outputBytes * child.repeatedFraction) >= 32,
         "One nondelegating child shape per operation with bounded distinct terminal content required",
@@ -304,6 +330,11 @@ export function nativeShapeReply(
   context: { fixtureId: string; shapes: NativeShape[] } = { fixtureId: "", shapes: [shape] },
 ) {
   const { pairs } = turn;
+  if (shape.operations.some((operation) => operation.kind === "sandbox-create"))
+    workloadCheck(
+      nativeTaskText(turn.origin) === nativeMarker(context.fixtureId, shape.name, nonce),
+      "Sandbox bootstrap requires an exact standalone native marker",
+    );
   workloadCheck(body.model === shape.model && body.stream === true, "Admitted native model/shape required");
   workloadCheck(pairs.length < shape.modelCalls, "Native model budget exhausted");
   let operationIndex = 0;
@@ -350,6 +381,33 @@ export function nativeShapeReply(
       } else if (operation.kind === "sandbox") {
         base = `${nativeSandboxOutput(operation)}\n\n[exit 0]`;
         workloadCheck(returned.startsWith(base), "Native sandbox output/exit mismatch");
+      } else if (operation.kind === "sandbox-create") {
+        const resource = JSON.parse(returned);
+        workloadCheck(
+          resource &&
+            typeof resource === "object" &&
+            !Array.isArray(resource) &&
+            typeof resource.id === "string" &&
+            resource.id.length === 36 &&
+            new RegExp(`^${uuid}$`).test(resource.id) &&
+            resource.backend === "sprites" &&
+            resource.ownerScopeId === `personal:${operation.ownerId}` &&
+            resource.createdBy === operation.ownerId &&
+            resource.backingScopeId === `sandbox-${resource.id}` &&
+            resource.name === operation.name &&
+            resource.state === "ready" &&
+            resource.legacy === false &&
+            (resource.cleanupPending === undefined || resource.cleanupPending === false) &&
+            resource.error === undefined &&
+            typeof resource.createdAt === "string" &&
+            Number.isFinite(Date.parse(resource.createdAt)) &&
+            new Date(resource.createdAt).toISOString() === resource.createdAt &&
+            typeof resource.machineId === "string" &&
+            resource.machineId.trim() === resource.machineId &&
+            /^[A-Za-z0-9_.:-]{1,128}$/.test(resource.machineId),
+          "Ready native sandbox with exact synthetic ownership required",
+        );
+        base = returned;
       } else {
         if (operation.kind === "session-open") {
           const prefix = `Opened subagent "${operation.name}" (sessionId `;
@@ -416,6 +474,8 @@ export function nativeShapeReply(
     const properties = definition?.input_schema?.properties;
     workloadCheck(properties, "Installed native tool schema required");
     let valid = properties.command?.type === "string" && properties.sandbox_id;
+    if (call.name === "sandbox" && call.input.action === "create")
+      valid = properties.backend?.type === "string" && properties.name?.type === "string";
     if (call.name === "files") valid = properties.path?.type === "string";
     if (call.name === "sessions") {
       valid = properties.task?.type === "string" && properties.target?.type === "string";
