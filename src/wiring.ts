@@ -1925,7 +1925,6 @@ export function buildApp(
     ...(config.publicUrl ? { webhookPublicUrl: config.publicUrl } : {}),
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
     memoryStrategy,
-    ...(config.worldHooks ? { worldSandboxEnv: { WORLD_HOOKS_SECRET: config.worldHooks.secret } } : {}),
     ...(config.memoryProviderConfig
       ? {
           procedureRecall: (
