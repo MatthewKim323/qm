@@ -338,10 +338,14 @@ test("installed client and native sessions preserve cron/loop parent budgets, ow
     }
     await companion.close();
     assert.equal(companion.provider.totals.calls, 0);
-    assert.equal(receipts.length, 14);
+    const calls = receipts.filter((row) => row.type === "companion-call");
+    const starts = receipts.filter((row) => row.type === "companion-start");
+    assert.equal(calls.length, 14);
+    assert.equal(starts.length, 14);
+    assert.deepEqual(new Set(starts.map((row) => row.responseId)), new Set(calls.map((row) => row.responseId)));
     assert.equal(new Set(allResponseIds).size, 14);
-    assert.deepEqual(new Set(receipts.map((row) => row.responseId)), new Set(allResponseIds));
-    assert.ok(receipts.every((row) => row.error === null && row.qualified === false));
+    assert.deepEqual(new Set(calls.map((row) => row.responseId)), new Set(allResponseIds));
+    assert.ok(calls.every((row) => row.error === null && row.qualified === false));
   } finally {
     await companion.close();
   }

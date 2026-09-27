@@ -21,6 +21,7 @@ import { auxiliaryModelForProvider, resolveModel } from "../../src/model/pi-mode
 import { companionReply, createWorkloadCompanion, promptSha256, type CompanionProfile } from "./workload-companion.ts";
 import { turnMarker, type ProviderProfile } from "./workload-provider.ts";
 import type { WorkloadFixture } from "./workload.ts";
+import { nativeMarker } from "./workload-native.ts";
 import {
   materializeInput,
   materializeMarker,
@@ -107,6 +108,121 @@ function user(content: string) {
 function loopPrompt(stage: string, marker: string) {
   return `[Loop ${stage}]\nSynthetic fixture only\n[End loop ${stage}]\n${marker}`;
 }
+
+test("native admission precedes pacing and retains exact successful or aborted response identity", async () => {
+  for (const cancel of [false, true]) {
+    const records: Record<string, unknown>[] = [];
+    const accepted = Promise.withResolvers<Record<string, unknown>>();
+    const nativeProfile: CompanionProfile = {
+      ...profile,
+      nativeShapes: [
+        {
+          name: "admission",
+          model: modelId,
+          modelCalls: 1,
+          toolCalls: 0,
+          batches: [],
+          operations: [],
+          outputBytes: 32,
+          repeatedFraction: 0.5,
+          delayMs: cancel ? 60_000 : 10,
+          chunkCharacters: 8,
+          chunkIntervalMs: 0,
+          terminal: "reply",
+        },
+      ],
+    };
+    const companion = await createWorkloadCompanion(
+      nativeProfile,
+      provider,
+      fixture,
+      (record) => {
+        records.push(record);
+        if (record.type === "companion-start") accepted.resolve(record);
+      },
+      { QM_PERF_TEST_TOKEN: token },
+    );
+    companion.server.listen(0, "127.0.0.1");
+    await once(companion.server, "listening");
+    const address = companion.server.address();
+    assert.ok(address && typeof address !== "string");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const model = { ...resolveModel(modelId, false)!, baseUrl } as Model<"anthropic-messages">;
+    const abort = new AbortController();
+    try {
+      for (const [body, apiKey, status] of [
+        ["{}", token, 400],
+        ["null", token, 400],
+        ["{}", "wrong-token", 401],
+      ] as const) {
+        const rejected = await fetch(`${baseUrl}/v1/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": apiKey },
+          body,
+        });
+        assert.equal(rejected.status, status);
+        await rejected.text();
+      }
+      assert.equal(records.filter((record) => record.type === "companion-start").length, 0);
+      const result = stream(
+        model,
+        {
+          messages: [user(nativeMarker(fixture.fixtureId, "admission", "owned-intent"))],
+        },
+        { apiKey: token, maxTokens: 256, signal: abort.signal },
+      ).result();
+      const start = await Promise.race([
+        accepted.promise,
+        sleep(5000, undefined, { ref: false }).then(() => {
+          throw new Error("Native admission was not observed");
+        }),
+      ]);
+      assert.equal(start.qualified, false);
+      assert.equal(start.fixtureId, fixture.fixtureId);
+      assert.equal(start.profileSha256, fixture.profileSha256);
+      assert.equal(start.companionProfileSha256, companion.profileSha256);
+      assert.equal(start.model, modelId);
+      assert.equal(start.streaming, true);
+      assert.equal(
+        start.nativeOriginSha256,
+        promptSha256(nativeMarker(fixture.fixtureId, "admission", "owned-intent")),
+      );
+      assert.deepEqual(start.native, {
+        shape: "admission",
+        nonce: "owned-intent",
+        step: 0,
+        modelCalls: 1,
+        toolCalls: 0,
+        terminal: true,
+      });
+      assert.equal(records.filter((record) => record.responseId === start.responseId).length, 1);
+      assert.ok(Number(start.startedAt) <= Number(start.acceptedAt));
+      assert.equal(start.firstDeltaAt, undefined);
+      assert.equal(start.responseBytes, undefined);
+      if (cancel) abort.abort();
+      const response = await result;
+      assert.equal(response.stopReason, cancel ? "aborted" : "stop");
+      if (!cancel) assert.equal(response.responseId, start.responseId);
+      await companion.close();
+      const terminal = records.filter(
+        (record) => record.type === "companion-call" && record.responseId === start.responseId,
+      );
+      assert.equal(terminal.length, 1);
+      const call = terminal[0]!;
+      for (const key of ["requestSha256", "startedAt", "systemSha256", "native", "requestBytes", "requestGzipBytes"])
+        assert.deepEqual(call[key], start[key]);
+      assert.ok(Number(call.finishedAt) >= Number(start.acceptedAt));
+      if (cancel) {
+        assert.match(String(call.error), /abort/i);
+        assert.equal(call.firstDeltaAt, null);
+        assert.equal(call.responseBytes, 0);
+      } else assert.equal(call.error, null);
+    } finally {
+      abort.abort();
+      await companion.close();
+    }
+  }
+});
 
 test("identical companion requests retain unique response receipts across helper restarts", async () => {
   const records: Record<string, unknown>[] = [];

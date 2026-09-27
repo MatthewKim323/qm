@@ -250,23 +250,30 @@ test("two actual scheduled cron fires use distinct finite shapes and exact stabl
     assert.equal(companion.crons!.snapshot().states[0]!.occurrence, 2);
     assert.equal(companion.crons!.snapshot().complete, false);
     await companion.close();
-    assert.equal(receipts.length, 5);
+    const calls = receipts.filter((record) => record.type === "companion-call");
+    const starts = receipts.filter((record) => record.type === "companion-start");
+    assert.equal(starts.length, 5);
     assert.deepEqual(
-      receipts.map((record) => record.native.shape),
+      starts.map((record) => record.responseId),
+      calls.map((record) => record.responseId),
+    );
+    assert.equal(calls.length, 5);
+    assert.deepEqual(
+      calls.map((record) => record.native.shape),
       ["first", "first", "second", "second", "second"],
     );
     assert.equal(
-      receipts.reduce((n, record) => n + record.native.toolCalls, 0),
+      calls.reduce((n, record) => n + record.native.toolCalls, 0),
       4,
     );
     assert.ok(
-      receipts.every(
+      calls.every(
         (record) =>
           record.cron.responseComplete && record.cron.provisional && !record.qualified && record.error === null,
       ),
     );
     assert.equal(new Set(responseIds).size, 5);
-    assert.deepEqual(new Set(responseIds), new Set(receipts.map((record) => record.responseId)));
+    assert.deepEqual(new Set(responseIds), new Set(calls.map((record) => record.responseId)));
     assert.equal(companion.provider.totals.calls, 0);
   } finally {
     await scheduler.stop();
@@ -395,9 +402,13 @@ test("aborted accepted cron HTTP response retains failed receipt without advanci
     await companion.close();
     assert.equal(companion.crons!.snapshot().failed, true);
     assert.equal(companion.crons!.snapshot().states[0]!.occurrence, 0);
-    assert.equal(records.length, 1);
-    assert.equal(records[0]!.cron.responseComplete, false);
-    assert.ok(records[0]!.error);
+    const starts = records.filter((record) => record.type === "companion-start");
+    const calls = records.filter((record) => record.type === "companion-call");
+    assert.equal(starts.length, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(starts[0]!.responseId, calls[0]!.responseId);
+    assert.equal(calls[0]!.cron.responseComplete, false);
+    assert.ok(calls[0]!.error);
   } finally {
     abort.abort();
     await request.catch(() => {});
@@ -529,10 +540,17 @@ test("native manual cron compaction preserves the next scheduled finite occurren
     assert.equal(fires.find((fire) => fire.fireKey === manual.fireKey)!.scheduledAt, undefined);
     assert.ok(fires.some((fire) => fire.fireKey === `cron:${plan.definition.id}:${firstFireAt}`));
     await companion.close();
-    assert.equal(receipts.filter((record) => record.cron).length, 5);
-    assert.equal(receipts.filter((record) => record.rule === "compaction").length, 2);
-    assert.ok(receipts.every((record) => record.error === null));
-    assert.equal(new Set(receipts.map((record) => record.responseId)).size, 7);
+    const calls = receipts.filter((record) => record.type === "companion-call");
+    const starts = receipts.filter((record) => record.type === "companion-start");
+    assert.equal(starts.length, 5);
+    assert.deepEqual(
+      starts.map((record) => record.responseId),
+      calls.filter((record) => record.cron).map((record) => record.responseId),
+    );
+    assert.equal(calls.filter((record) => record.cron).length, 5);
+    assert.equal(calls.filter((record) => record.rule === "compaction").length, 2);
+    assert.ok(calls.every((record) => record.error === null));
+    assert.equal(new Set(calls.map((record) => record.responseId)).size, 7);
     assert.equal(companion.crons!.snapshot().states[0]!.occurrence, 2);
     assert.equal(companion.crons!.snapshot().failed, false);
     assert.equal(companion.provider.totals.calls, 0);

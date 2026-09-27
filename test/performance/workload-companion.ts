@@ -14,7 +14,7 @@ import {
 } from "./workload-provider.ts";
 import type { WorkloadFixture } from "./workload.ts";
 import { materializeReply, validateMaterializeShape, type MaterializeShape } from "./workload-materialize.ts";
-import { nativeReply, validateNativeShapes, type NativeShape } from "./workload-native.ts";
+import { nativeReply, nativeTurn, validateNativeShapes, type NativeShape } from "./workload-native.ts";
 import { createLoopResponder, type LoopPlan } from "./workload-loop.ts";
 import { createCronResponder, type CronPlan } from "./workload-cron.ts";
 
@@ -414,6 +414,29 @@ export async function createWorkloadCompanion(
         stop_sequence: null,
         usage,
       };
+      if (native)
+        emit({
+          schemaVersion: 1,
+          type: "companion-start",
+          qualified: false,
+          fixtureId: fixture.fixtureId,
+          profileSha256: fixture.profileSha256,
+          companionProfileSha256: profileSha256,
+          rule,
+          model: body.model,
+          systemSha256,
+          requestSha256,
+          nativeOriginSha256: promptSha256(nativeTurn(body)!.origin),
+          responseId,
+          streaming,
+          native: { ...native },
+          ...(loopCall ? { loop: { ...loopCall.reply.loop } } : {}),
+          ...(cronCall ? { cron: { ...cronCall.reply.cron } } : {}),
+          startedAt,
+          acceptedAt: Date.now(),
+          requestBytes,
+          requestGzipBytes,
+        });
       await sleep(reply.pacing.delayMs, undefined, { signal: abort.signal });
       if (!streaming) {
         const json = JSON.stringify(message);

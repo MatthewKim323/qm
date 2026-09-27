@@ -396,9 +396,13 @@ test("aborted accepted HTTP response poisons the plan before another occurrence 
       await companion.close();
       assert.equal(companion.loops!.snapshot().failed, true);
       assert.equal(companion.loops!.snapshot().complete, false);
-      assert.equal(records.length, 1);
-      assert.equal(records[0]!.loop.responseComplete, false);
-      assert.ok(records[0]!.error);
+      const starts = records.filter((record) => record.type === "companion-start");
+      const calls = records.filter((record) => record.type === "companion-call");
+      assert.equal(starts.length, 1);
+      assert.equal(calls.length, 1);
+      assert.equal(starts[0]!.responseId, calls[0]!.responseId);
+      assert.equal(calls[0]!.loop.responseComplete, false);
+      assert.ok(calls[0]!.error);
     } finally {
       abort.abort();
       await response.catch(() => {});
@@ -495,6 +499,21 @@ test("native Pi sync uses its terminal byte budget and exact optional recovery w
       );
       assert.equal(calls.filter((row) => row.native.terminal).length, 1);
       const tape = await store.getTape(session.id);
+      const starts = receipts.filter((row) => row.type === "companion-start");
+      assert.deepEqual(
+        starts.map((row) => row.responseId),
+        calls.map((row) => row.responseId),
+      );
+      const trigger = tape.find((row) => row.kind === "message" && row.entrySeq !== undefined)!.payload as {
+        content: Array<{ type: string; text: string }>;
+      };
+      assert.ok(trigger.content.every((block) => block.type === "text"));
+      assert.equal(
+        starts[0]!.nativeOriginSha256,
+        createHash("sha256")
+          .update(trigger.content.map((block) => block.text).join("\n"))
+          .digest("hex"),
+      );
       const messages = tape
         .filter((row) => row.kind === "message")
         .map((row) => row.payload as { role: string; responseId?: string; stopReason?: string });
