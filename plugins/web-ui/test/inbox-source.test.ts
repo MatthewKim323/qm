@@ -203,7 +203,7 @@ test("the inbox list spans the same desktop content width as the item detail", (
     css,
     /\.content-wide-page > \.pane-head \{\s*width: min\(var\(--content-wide-width\), 100%\);\s*max-width: none;/,
   );
-  assert.doesNotMatch(css, /inbox-item-aside/);
+  assert.match(css, /\.inbox-thread-page > \.inbox-item-surface/);
 });
 
 test("inbox item hover behaves like a sidebar conversation hover", () => {

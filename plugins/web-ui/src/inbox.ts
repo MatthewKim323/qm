@@ -1818,7 +1818,7 @@ function itemPageTpl(item: InboxItem): TemplateResult {
   let detail: TemplateResult;
   if (!item.detailLoaded) detail = html`<div class="empty compact">Loading message…</div>`;
   else if (usesOutputReview(item)) detail = reviewTpl(item);
-  else detail = html`${contextTpl(item)} ${handled ? handledNoteTpl(item) : nothing} ${chatTpl(item)}`;
+  else detail = html`${contextTpl(item)} ${handled ? handledNoteTpl(item) : nothing}`;
   return html`
     <div class="pane-head inbox-item-head src-${item.source}">
       <div class="inbox-item-head-copy">
@@ -1840,6 +1840,7 @@ function itemPageTpl(item: InboxItem): TemplateResult {
         ${detail}
       </div>
     </div>
+    ${item.detailLoaded && !usesOutputReview(item) ? html`<aside class="inbox-item-aside" aria-label="Conversation assistant">${chatTpl(item)}</aside>` : nothing}
   `;
 }
 
@@ -1919,6 +1920,7 @@ function drawFull(): void {
   }
   syncInboxUrl(openSentEmail?.id ?? fullSurface.selectedId);
   const host = fullSurface.host;
+  host.classList.toggle("inbox-thread-page", Boolean(openItem?.detailLoaded && !usesOutputReview(openItem)));
   const surface = fullSurface;
   let page: TemplateResult | typeof nothing;
   if (openItem) page = itemPageTpl(openItem);
