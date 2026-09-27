@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:https";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { finished, pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { SignatureV4 } from "@smithy/signature-v4";
@@ -20,6 +20,7 @@ interface GatewayFixture {
   apiKeyHeader: string;
   upstream: string;
   upstreamToken: string;
+  upstreamTimeoutMs?: number;
   models: Array<{
     id: string;
     upstreamModelId: string;
@@ -69,6 +70,8 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
   assert.ok(
     !upstream.username && !upstream.password && !upstream.search && !upstream.hash && upstream.pathname === "/",
   );
+  const upstreamTimeoutMs = profile.upstreamTimeoutMs ?? 120000;
+  assert.ok(Number.isSafeInteger(upstreamTimeoutMs) && upstreamTimeoutMs > 0 && upstreamTimeoutMs <= 900000);
   assert.ok(profile.models.length > 0 && profile.models.length <= 1000);
   assert.equal(new Set(profile.models.map((model) => model.id)).size, profile.models.length);
   for (const model of profile.models) {
@@ -108,6 +111,7 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
     let path = "unrecognized",
       verified = false,
       requestBytes = 0,
+      responseBytes = 0,
       status = 400;
     const evidence: Record<string, unknown> = { fixtureId: profile.fixtureId, qualified: false };
     try {
@@ -126,8 +130,11 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
       }
       const bytes = Buffer.concat(chunks);
       evidence.bodySha256 = sha(bytes);
-      const json = (value: unknown) =>
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+      const json = (value: unknown) => {
+        const output = JSON.stringify(value);
+        responseBytes += Buffer.byteLength(output);
+        res.writeHead(200, { "content-type": "application/json" }).end(output);
+      };
       if (path === "/security-screen") {
         phase = "security";
         assert.ok(equal(req.headers["x-api-key"] as string | undefined, profile.security.token));
@@ -244,7 +251,7 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
           },
           body: forwarded,
           redirect: "error",
-          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120000)]),
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(upstreamTimeoutMs)]),
         });
         status = upstreamResponse.status;
         evidence.upstreamStatus = status;
@@ -252,15 +259,26 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
           "content-type": upstreamResponse.headers.get("content-type") ?? "application/octet-stream",
         });
         assert.ok(upstreamResponse.body);
-        await pipeline(Readable.fromWeb(upstreamResponse.body), res);
+        await pipeline(
+          Readable.fromWeb(upstreamResponse.body),
+          new Transform({
+            transform(chunk, _encoding, callback) {
+              responseBytes += chunk.length;
+              callback(null, chunk);
+            },
+          }),
+          res,
+        );
       }
     } catch {
       status = res.headersSent ? status : 400;
       evidence.failed = true;
       evidence.failurePhase = phase;
-      if (!res.headersSent)
-        res.writeHead(status, { "content-type": "application/json" }).end('{"error":"Fixture request rejected"}');
-      else res.destroy();
+      if (!res.headersSent && !res.destroyed) {
+        const output = '{"error":"Fixture request rejected"}';
+        responseBytes += Buffer.byteLength(output);
+        res.writeHead(status, { "content-type": "application/json" }).end(output);
+      } else res.destroy();
     } finally {
       try {
         await finished(res, { cleanup: true });
@@ -269,7 +287,19 @@ export function createGatewayFixture(profile: GatewayFixture, record: (row: Reco
       }
       evidence.completed = res.writableFinished && !disconnected.signal.aborted;
       evidence.aborted = disconnected.signal.aborted;
-      record({ ...evidence, path, verified, status, requestBytes, durationMs: Date.now() - start });
+      const finishedAt = Date.now();
+      record({
+        ...evidence,
+        path,
+        verified,
+        status,
+        requestBytes,
+        responseBytes,
+        startedAt: start,
+        finishedAt,
+        durationMs: finishedAt - start,
+        upstreamTimeoutMs,
+      });
     }
   });
   server.requestTimeout = 30000;

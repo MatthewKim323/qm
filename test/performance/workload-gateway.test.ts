@@ -31,6 +31,7 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
     { stdio: "ignore" },
   );
   let forwarded = 0;
+  const partialBytes = 'data: {"fixture":"partial"}\n\n';
   const upstream = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -38,12 +39,22 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
     assert.equal(req.headers["x-api-key"], "qm-perf-upstream-token-only");
     assert.equal(req.headers.authorization, undefined);
     assert.equal(req.headers["x-amz-security-token"], undefined);
-    assert.equal(JSON.parse(Buffer.concat(chunks).toString()).model, "fixture-model");
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    assert.equal(input.model, "fixture-model");
     forwarded++;
+    if (input.fixtureMode === "timeout") return;
+    if (input.fixtureMode === "partial") {
+      res.writeHead(200, { "content-type": "text/event-stream" }).write(partialBytes);
+      return;
+    }
     res.writeHead(200, { "content-type": "text/event-stream" }).end('data: {"fixture":true}\n\n');
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const rows: Record<string, unknown>[] = [];
+  const partialReceipt = Promise.withResolvers<Record<string, unknown>>();
+  const timeoutReceipt = Promise.withResolvers<Record<string, unknown>>();
+  let partialSha256 = "",
+    timeoutSha256 = "";
   let cancelled: (row: Record<string, unknown>) => void;
   const cancelledReceipt = new Promise<Record<string, unknown>>((resolve) => {
     cancelled = resolve;
@@ -63,6 +74,7 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
     apiKey: "qm-perf-gateway-token-only",
     apiKeyHeader: "api-key",
     upstreamToken: "qm-perf-upstream-token-only",
+    upstreamTimeoutMs: 1000,
     upstream: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
     models: [
       {
@@ -84,6 +96,8 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
   const gateway = createGatewayFixture(profile, (row) => {
     rows.push(row);
     if (row.requestId === "qm-perf-cancelled") cancelled(row);
+    if (row.bodySha256 === partialSha256) partialReceipt.resolve(row);
+    if (row.bodySha256 === timeoutSha256) timeoutReceipt.resolve(row);
   });
   await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
   const url = `https://127.0.0.1:${(gateway.address() as AddressInfo).port}`;
@@ -159,6 +173,33 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
     });
     assert.equal(response.status, 200);
     assert.equal(await response.text(), 'data: {"fixture":true}\n\n');
+    const completed = rows.find((row) => row.bodySha256 === hash(body))!;
+    assert.equal(completed.responseBytes, Buffer.byteLength('data: {"fixture":true}\n\n'));
+    const partialBody = JSON.stringify({ ...JSON.parse(body), fixtureMode: "partial" });
+    partialSha256 = hash(partialBody);
+    const partial = await signedFetch(url + "/v1/messages", { method: "POST", body: partialBody });
+    const reader = partial.body!.getReader();
+    const first = await reader.read();
+    assert.equal(Buffer.from(first.value!).toString(), partialBytes);
+    await reader.cancel();
+    const partialRow = await partialReceipt.promise;
+    assert.equal(partialRow.responseBytes, Buffer.byteLength(partialBytes));
+    assert.equal(partialRow.completed, false);
+    assert.equal(partialRow.aborted, true);
+    assert.equal(partialRow.failed, true);
+    const timeoutBody = JSON.stringify({ ...JSON.parse(body), fixtureMode: "timeout" });
+    timeoutSha256 = hash(timeoutBody);
+    const timedOut = await signedFetch(url + "/v1/messages", { method: "POST", body: timeoutBody });
+    assert.equal(timedOut.status, 400);
+    const timeoutText = await timedOut.text();
+    const timeoutRow = await timeoutReceipt.promise;
+    assert.equal(timeoutRow.failed, true);
+    assert.equal(timeoutRow.responseBytes, Buffer.byteLength(timeoutText));
+    assert.equal(timeoutRow.upstreamTimeoutMs, profile.upstreamTimeoutMs);
+    assert.ok(Number(timeoutRow.durationMs) >= profile.upstreamTimeoutMs - 50);
+    for (const upstreamTimeoutMs of [0, -1, 0.5, NaN, Infinity, 900001])
+      assert.throws(() => createGatewayFixture({ ...profile, upstreamTimeoutMs }, () => {}));
+    createGatewayFixture({ ...profile, upstreamTimeoutMs: 900000 }, () => {}).close();
     for (const [path, headers, wire] of [
       ["/v1/messages", message.headers, body + " "],
       ["/v1/messages", { ...message.headers, "api-key": "qm-perf-wrong-secret-value" }, body],
@@ -232,11 +273,23 @@ test("TLS gateway verifies signed bodies and native catalog and screening client
     assert.equal(terminal.completed, false);
     assert.equal(terminal.aborted, true);
     assert.equal(terminal.failed, true);
+    assert.equal(terminal.responseBytes, 0);
+    assert.ok(
+      rows.every(
+        (row) =>
+          Number.isSafeInteger(row.startedAt) &&
+          Number.isSafeInteger(row.finishedAt) &&
+          Number(row.finishedAt) >= Number(row.startedAt) &&
+          row.durationMs === Number(row.finishedAt) - Number(row.startedAt) &&
+          Number.isSafeInteger(row.responseBytes) &&
+          Number(row.responseBytes) >= 0,
+      ),
+    );
     assert.ok(
       rows.filter((row) => row.verified && !row.failed).every((row) => row.completed === true && row.aborted === false),
     );
-    assert.equal(forwarded, 1);
-    assert.equal(rows.filter((row) => row.verified && row.path !== "/security-screen").length, 4);
+    assert.equal(forwarded, 3);
+    assert.equal(rows.filter((row) => row.verified && row.path !== "/security-screen").length, 6);
     await assert.rejects(fetch(url + "/v1/models"), /fetch failed/);
     assert.ok(!JSON.stringify(rows).includes(profile.apiKey));
     assert.ok(!JSON.stringify(rows).includes(payload));
