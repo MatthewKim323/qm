@@ -53,7 +53,7 @@ cmd_env() {
   [[ -f "$ENV_FILE" ]] && keep_secret="$(envval "$ENV_FILE" WORLD_HOOKS_SECRET)"
   gen() { openssl rand -hex 32; }
   local db="postgres://qm:qm@127.0.0.1:${PG_PORT}/qm"
-  local mpc='{"providers":[{"id":"procedures","type":"memorable"}],"routes":[{"provider":"default","scopes":["personal","channel","group","team","org"],"capture":"automatic"},{"provider":"procedures","scopes":["personal"],"capture":"automatic","manage":false,"label":"Procedures"}]}'
+  local mpc='{"providers":[{"id":"procedures","type":"memorable","passEnv":["MEMORABLE_VARIANT"]}],"routes":[{"provider":"default","scopes":["personal","channel","group","team","org"],"capture":"automatic"},{"provider":"procedures","scopes":["personal"],"capture":"automatic","manage":false,"label":"Procedures"}]}'
   umask 077
   if [[ -f "$ENV_FILE" ]]; then
     # keep every existing secret, only refresh the credentials pulled from WORLD
