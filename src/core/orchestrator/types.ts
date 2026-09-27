@@ -160,6 +160,15 @@ export interface OrchestratorDeps {
   mcp?: McpToolService;
   memoryPolicy?: MemoryPolicy;
   memoryStrategy?: MemoryStrategy;
+  /**
+   * Task-keyed recall from query-driven providers (Memorable procedures). QM's per-turn recall reads
+   * notebooks only, so without this a procedure provider is never asked. Called with the turn's
+   * task line; world-event turns use a stable line derived from the event type and standing orders.
+   */
+  procedureRecall?: (
+    scopeId: import("../../types.ts").ScopeId,
+    context: { query: string; actorId?: string; autonomous?: boolean },
+  ) => Promise<string>;
   skills?: SkillStore;
   skillBundles?: SkillBundleStore;
   skillsReady?: Promise<void>;

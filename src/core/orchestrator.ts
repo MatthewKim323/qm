@@ -2,6 +2,7 @@ import { externalSlackRequestAllowed, currentExternalSlackRun } from "../resolut
 import { externalTools } from "./orchestrator/external-tools.ts";
 import { isBackendCredential } from "../credentials/keychain.ts";
 import { memoryRecallDelta } from "../memory/recall-delta.ts";
+import { procedureTaskLine } from "../worldhooks/procedure-task.ts";
 import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
 import {
   MAX_DOCUMENT_BYTES,
@@ -1092,7 +1093,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const { sharingSources, memoryScopeId, baseRecallScopes, memoryAccess } = context;
       resolution.grantedHandles = context.listFiles();
       const recallStart = Date.now();
-      const recalled = await context.recall();
+      let recalled = await context.recall();
+      if (useMemory && deps.procedureRecall) {
+        const task = procedureTaskLine(input.text);
+        if (task) {
+          const procedure = await deps
+            .procedureRecall(memoryScopeId, { query: task, actorId: actor.id, autonomous: automatedTurn })
+            .catch(swallowAs("procedure recall", ""));
+          if (procedure.trim()) recalled = [recalled, procedure.trim()].filter(Boolean).join("\n\n");
+        }
+      }
       const recallMs = Date.now() - recallStart;
       const isWeb = input.surface === "web";
       const isSlack = input.surface === "slack";

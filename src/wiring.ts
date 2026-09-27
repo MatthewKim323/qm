@@ -1925,6 +1925,12 @@ export function buildApp(
     ...(config.publicUrl ? { webhookPublicUrl: config.publicUrl } : {}),
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
     memoryStrategy,
+    ...(config.memoryProviderConfig
+      ? {
+          procedureRecall: (scopeId: ScopeId, context: { query: string; actorId?: string; autonomous?: boolean }) =>
+            baseMemory.recall(scopeId, context),
+        }
+      : {}),
     skills,
     skillBundles,
     skillsReady,

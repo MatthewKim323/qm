@@ -159,3 +159,28 @@ test("recall blocks and run deltas render for the HUD", () => {
     ({ total: { toolCalls, turns, wallMs, toolErrors: 0 } }) as WorldRunReport;
   assert.equal(learnedLine(r(30, 9, 166_000), r(18, 7, 90_000)), "tool calls 30 -> 18 · turns 9 -> 7 · 166s -> 90s");
 });
+
+test("world-event turns recall by a stable task line, not by per-event noise", async () => {
+  const { procedureTaskLine } = await import("../src/worldhooks/procedure-task.ts");
+  const envelope = (id: string, words: string) =>
+    [
+      `<wake reason="world-event" surface="webhook" world-event-id="${id}" world-event-type="customer_feedback.detected" world-source="quest3s" at="2026-09-27T21:18:57.660Z">`,
+      '  <standing-orders note="x">',
+      "    A customer gave product feedback in person. Keep drafts under $HOME/world/&lt;event id&gt;/.",
+      "",
+      "Run this as a swarm. First, spawn exactly these 3 workers",
+      "  </standing-orders>",
+      '  <event note="y">{&quot;product&quot;: &quot;Canvas&quot;, &quot;feature&quot;: &quot;onboarding&quot;, &quot;feedback&quot;: &quot;' +
+        words +
+        "&quot;}</event>",
+      "</wake>",
+    ].join("\n");
+  const a = procedureTaskLine(envelope("evt_a", "setup was confusing"));
+  const b = procedureTaskLine(envelope("evt_b", "the onboarding was rough"));
+  assert.equal(a, b);
+  assert.equal(
+    a,
+    "Handle world event customer_feedback.detected about Canvas onboarding: A customer gave product feedback in person. Keep drafts under $HOME/world/<event id>/.",
+  );
+  assert.equal(procedureTaskLine("  fix the\nbuild  "), "fix the build");
+});

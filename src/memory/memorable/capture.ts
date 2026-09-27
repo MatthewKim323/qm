@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SessionEntry } from "../../types.ts";
 import { clampChars, stripTerminalControl } from "./inject.ts";
+import { procedureTaskLine } from "../../worldhooks/procedure-task.ts";
 
 export interface MemorableToolCall {
   name: string;
@@ -102,7 +103,7 @@ export function captureSession(sessionId: string, entries: SessionEntry[]): Memo
     if (entry.type === "user") {
       const text = (entry.payload as { text?: unknown } | null)?.text;
       if (typeof text !== "string") continue;
-      const prompt = cleanPrompt(text);
+      const prompt = cleanPrompt(procedureTaskLine(text) ?? text);
       if (!prompt) continue;
       close();
       current = { workflow_id: workflowId(sessionId, entry.seq), prompt, tool_calls: [] };
