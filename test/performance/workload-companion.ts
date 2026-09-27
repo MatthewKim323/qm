@@ -343,8 +343,11 @@ export async function createWorkloadCompanion(
       }
       workloadCheck(body && typeof body === "object" && !Array.isArray(body), "Request object required");
       systemSha256 = promptSha256(body.system === undefined ? "" : textContent(body.system, true));
-      loopCall = loops?.begin(body, requestSha256) ?? null;
-      cronCall = crons?.begin(body) ?? null;
+      const utility = profile.utilities.some((rule) => rule.model === body.model && rule.systemSha256 === systemSha256);
+      if (!utility) {
+        loopCall = loops?.begin(body, requestSha256) ?? null;
+        cronCall = crons?.begin(body) ?? null;
+      }
       const admitted = loopCall ?? cronCall;
       const reply = admitted ? { ...admitted.reply, systemSha256 } : companionReply(body, profile);
       const completion = admitted

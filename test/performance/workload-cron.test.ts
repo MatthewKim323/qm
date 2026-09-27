@@ -5,6 +5,11 @@ import test from "node:test";
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { createCompaction } from "../../src/core/orchestrator/compaction.ts";
+import { createPiHarness } from "../../src/harness/pi-harness.ts";
+import { setProviderBaseUrls } from "../../src/model/provider-endpoints.ts";
+import { createMemorySessionStore } from "../../src/sessions/memory-session-store.ts";
+import { tapeCheckpointPayload } from "../../src/sessions/session-store.ts";
 import { environmentNote } from "../../src/core/attachments.ts";
 import { createCronStore } from "../../src/cron/cron-store.ts";
 import { createScheduler } from "../../src/cron/scheduler.ts";
@@ -397,5 +402,200 @@ test("aborted accepted cron HTTP response retains failed receipt without advanci
     abort.abort();
     await request.catch(() => {});
     await companion.close();
+  }
+});
+
+test("native manual cron compaction preserves the next scheduled finite occurrence", async () => {
+  const { crons, plan, firstFireAt } = await setup();
+  const content = text.repeat(180);
+  const operation = {
+    ...read,
+    bytes: Buffer.byteLength(content),
+    sha256: createHash("sha256").update(content).digest("hex"),
+  };
+  const shapes = [shape, second].map((value) => ({ ...value, operations: value.operations!.map(() => operation) }));
+  const utility = {
+    name: "compaction",
+    model: shape.model,
+    systemSha256: "c464889dcfa60441e642f291445b49523f263e6fb2725d0c25075543a2ec3f8f",
+    response: "## Goal\nRetain synthetic cron context.",
+    delayMs: 0,
+    chunkCharacters: 17,
+    chunkIntervalMs: 0,
+  };
+  const receipts: Record<string, any>[] = [];
+  const companion = await createWorkloadCompanion(
+    { ...provider, utilities: [utility], nativeShapes: shapes, cronPlans: [plan] },
+    provider,
+    fixture,
+    (record) => receipts.push(record),
+    { QM_PERF_TEST_TOKEN: token },
+  );
+  companion.server.listen(0, "127.0.0.1");
+  await once(companion.server, "listening");
+  const address = companion.server.address();
+  assert.ok(address && typeof address !== "string");
+  setProviderBaseUrls({ anthropic: `http://127.0.0.1:${address.port}` });
+  const harness = createPiHarness({ defaultModelId: shape.model, apiKey: token });
+  const store = createMemorySessionStore();
+  const scope = plan.definition.ownerScopeId!;
+  let completed = 0;
+  const scheduler = createScheduler({
+    crons,
+    deliveries: {
+      enqueue: async () => {
+        throw new Error("No delivery permitted");
+      },
+    } as never,
+    idempotency: createIdempotencyStore(),
+    identity: { refresh: async () => {}, classify: () => ({ type: "internal" }) } as never,
+    lock: createMemoryAdvisoryLock(),
+    currentScopeMembers: async () => plan.definition.members!,
+    directory: {
+      list: async () => plan.directoryMembers,
+      get: async () => plan.directoryMembers[0]!,
+      channelMember: async () => true,
+      groupMember: async () => false,
+    },
+    run: async (request) => {
+      const session = await store.getOrCreateByThread(request.conversation.threadRef!, "channel", scope);
+      const { lease } = await store.acquireLease(session.id);
+      assert.ok(lease);
+      try {
+        await harness.turns.runTurn({
+          session,
+          input: request.text,
+          systemPrompt: "Synthetic cron fixture",
+          recordModelCall: () => {},
+          history: [],
+          tools: {
+            read: async (path: string) => {
+              assert.equal(path, read.path);
+              return { content, sourceScopeId: scope };
+            },
+          } as never,
+          scopeLabel: scope,
+          orgScopeId: scopeId("org", "fixture"),
+          pollFire: true,
+          turnWallClockMs: 30_000,
+          emit: (entry) => store.append(lease, entry),
+          tape: (record) => store.appendTape(lease, record),
+        });
+        const history = (await store.getContextWindow(session.id)).entries;
+        await store.appendTape(lease, {
+          kind: "annotation",
+          payload: tapeCheckpointPayload("turnEnd", undefined, history.find((entry) => entry.type === "user")!.seq),
+          scopeLabel: scope,
+          entrySeq: history.at(-1)!.seq,
+        });
+        await createCompaction({
+          sessions: store,
+          maxContextTokens: 400,
+          harness,
+          modelGateway: { recordCall: () => {} },
+        } as never).compactContextIfNeeded({
+          session,
+          lease,
+          visibleHistory: history,
+          scopeId: scope,
+          orgScopeId: scopeId("org", "fixture"),
+          actorId: plan.definition.owner,
+        });
+        const tape = await store.getTape(session.id);
+        assert.equal(
+          tape.filter(
+            (row) => row.kind === "context_event" && (row.payload as { event?: string }).event === "compaction",
+          ).length,
+          1,
+        );
+        completed++;
+        return { status: "silent", sessionId: session.id };
+      } finally {
+        await store.releaseLease(lease);
+      }
+    },
+  });
+  try {
+    const manual = await scheduler.runNow(plan.definition.id);
+    assert.equal(manual.started, true);
+    await manual.settled;
+    assert.equal(completed, 1);
+    assert.equal((await crons.get(plan.definition.id))!.nextFireAt, firstFireAt);
+    await scheduler.tick(firstFireAt);
+    assert.equal(completed, 2);
+    const fires = (await crons.listFires(plan.definition.id)).runs;
+    assert.equal(fires.length, 2);
+    assert.ok(fires.every((fire) => fire.status === "silent"));
+    assert.equal(fires.find((fire) => fire.fireKey === manual.fireKey)!.scheduledAt, undefined);
+    assert.ok(fires.some((fire) => fire.fireKey === `cron:${plan.definition.id}:${firstFireAt}`));
+    await companion.close();
+    assert.equal(receipts.filter((record) => record.cron).length, 5);
+    assert.equal(receipts.filter((record) => record.rule === "compaction").length, 2);
+    assert.ok(receipts.every((record) => record.error === null));
+    assert.equal(new Set(receipts.map((record) => record.responseId)).size, 7);
+    assert.equal(companion.crons!.snapshot().states[0]!.occurrence, 2);
+    assert.equal(companion.crons!.snapshot().failed, false);
+    assert.equal(companion.provider.totals.calls, 0);
+  } finally {
+    await scheduler.stop();
+    await harness.turns.close?.();
+    await companion.close();
+    setProviderBaseUrls({});
+  }
+});
+
+test("utility dispatch still rejects undeclared identities and invalid message or tool shapes", async () => {
+  const { plan } = await setup();
+  const system = "Synthetic declared utility system";
+  const utility = {
+    name: "test-utility",
+    model: shape.model,
+    systemSha256: createHash("sha256").update(system).digest("hex"),
+    response: "Synthetic utility response",
+    delayMs: 0,
+    chunkCharacters: 17,
+    chunkIntervalMs: 0,
+  };
+  const request = {
+    model: shape.model,
+    system,
+    stream: false,
+    messages: [{ role: "user", content: `Summarize ${plan.definition.action}` }],
+  };
+  for (const change of [
+    { system: system + " changed" },
+    { model: "unadmitted-model" },
+    { tools: wireTools },
+    { messages: [...request.messages, ...request.messages] },
+    { messages: [{ role: "user", content: [{ type: "image", data: "not-text" }] }] },
+  ]) {
+    const receipts: Record<string, any>[] = [];
+    const companion = await createWorkloadCompanion(
+      { ...provider, utilities: [utility], nativeShapes: [shape, second], cronPlans: [plan] },
+      provider,
+      fixture,
+      (record) => receipts.push(record),
+      { QM_PERF_TEST_TOKEN: token },
+    );
+    companion.server.listen(0, "127.0.0.1");
+    await once(companion.server, "listening");
+    const address = companion.server.address();
+    assert.ok(address && typeof address !== "string");
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": token },
+        body: JSON.stringify({ ...request, ...change }),
+      });
+      assert.equal(response.status, 400);
+      await response.text();
+      await companion.close();
+      assert.equal(companion.crons!.snapshot().states[0]!.occurrence, 0);
+      assert.equal(receipts.length, 1);
+      assert.ok(receipts[0]!.error);
+      assert.equal(companion.provider.totals.calls, 0);
+    } finally {
+      await companion.close();
+    }
   }
 });
