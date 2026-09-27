@@ -234,6 +234,7 @@ export function fieldSelect(props: {
   value?: string;
   id?: string;
   ariaLabel?: string;
+  ariaDescription?: string;
   describedBy?: string;
   focusKey?: string;
   disabled?: boolean;
@@ -246,6 +247,7 @@ export function fieldSelect(props: {
     <select
       id=${props.id ?? nothing}
       aria-label=${props.ariaLabel ?? nothing}
+      aria-description=${props.ariaDescription ?? nothing}
       aria-describedby=${props.describedBy ?? nothing}
       data-focus-key=${props.focusKey ?? nothing}
       .value=${props.value === undefined ? nothing : live(props.value)}

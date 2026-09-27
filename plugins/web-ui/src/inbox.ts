@@ -48,7 +48,7 @@ import { listBackLink } from "./list-page";
 import { registerPaneKind } from "./pane-kinds";
 import { exitSplitIfActive, notifyPanesChanged } from "./split";
 import { tip } from "./tooltip";
-import { brandName, icon, initials, relTime, workingWave } from "./ui";
+import { brandName, fieldSelect, icon, initials, relTime, workingWave } from "./ui";
 
 export type InboxSource = "gmail" | "slack" | "generic";
 
@@ -1680,18 +1680,20 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
               <div class="inbox-filter-bar">
                 <label class="inbox-filter">
                   <span>Emails</span>
-                  <span class="inbox-filter-control">
-                    <select
-                      aria-label="Email filter"
-                      aria-description=${INBOX_FILTERS.find((filter) => filter.id === inboxState.filter)?.description ?? ""}
-                      .value=${live(inboxState.filter)}
-                      ?disabled=${inboxState.filterBusy || inboxState.loading}
-                      @change=${(event: Event) => void selectInboxFilter((event.target as HTMLSelectElement).value as InboxFilter)}
-                    >
-                      ${INBOX_FILTERS.map((filter) => html`<option value=${filter.id} ?selected=${filter.id === inboxState.filter}>${filter.label}</option>`)}
-                    </select>
-                    ${icon(ChevronDown, 13)}
-                  </span>
+                  ${fieldSelect({
+                    className: "inbox-filter-control",
+                    ariaLabel: "Email filter",
+                    ariaDescription: INBOX_FILTERS.find((filter) => filter.id === inboxState.filter)?.description,
+                    value: inboxState.filter,
+                    disabled: inboxState.filterBusy || inboxState.loading,
+                    onChange: (value) => void selectInboxFilter(value as InboxFilter),
+                    options: INBOX_FILTERS.map(
+                      (filter) =>
+                        html`<option value=${filter.id} ?selected=${filter.id === inboxState.filter}>
+                          ${filter.label}
+                        </option>`,
+                    ),
+                  })}
                 </label>
               </div>
             `

@@ -9373,7 +9373,9 @@ h3.ambient-field-label {
   grid-template-columns: auto 13px;
   align-items: center;
 }
-.inbox-filter-control select {
+.field-select.inbox-filter-control > select {
+  min-height: 0;
+  width: auto;
   grid-area: 1 / 1 / 2 / 3;
   appearance: none;
   padding: 4px 19px 4px 0;
@@ -9384,12 +9386,18 @@ h3.ambient-field-label {
   font: inherit;
   cursor: pointer;
 }
-.inbox-filter-control > svg {
+.inbox-filter-control > .icon {
+  position: static;
+  width: 13px;
+  height: 13px;
+  opacity: 1;
   grid-area: 1 / 2;
   pointer-events: none;
 }
-.inbox-filter-control select:disabled {
+.inbox-filter-control:has(> select:disabled) {
   opacity: 0.6;
+}
+.inbox-filter-control select:disabled {
   cursor: wait;
 }
 .inbox-filter-control select:focus-visible,
