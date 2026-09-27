@@ -96,7 +96,14 @@ export function companionReply(body: Record<string, unknown>, profile: Companion
       workloadCheck(new Set(markerSha256).size === markerSha256.length, "Duplicate memory marker");
       memory = { userTextSha256: promptSha256(latest), markerSha256 };
     }
-    return { rule: utility.name, systemSha256, text: utility.response, pacing: utility, ...(memory ? { memory } : {}) };
+    return {
+      rule: utility.name,
+      systemSha256,
+      utilityInputSha256: promptSha256(latest),
+      text: utility.response,
+      pacing: utility,
+      ...(memory ? { memory } : {}),
+    };
   }
   const native = nativeReply(body, profile.fixtureId, profile.nativeShapes);
   if (native) return { ...native, systemSha256 };
@@ -348,6 +355,7 @@ export async function createWorkloadCompanion(
     let error: string | null = null;
     let streaming = false;
     let native: Record<string, unknown> | undefined;
+    let utilityInputSha256: string | undefined;
     let memory: { userTextSha256: string; markerSha256: string[] } | undefined;
     let loopCall: ReturnType<NonNullable<typeof loops>["begin"]> = null;
     let cronCall: ReturnType<NonNullable<typeof crons>["begin"]> = null;
@@ -413,6 +421,7 @@ export async function createWorkloadCompanion(
       ({ rule, systemSha256 } = reply);
       native = "native" in reply ? reply.native : undefined;
       memory = "memory" in reply ? reply.memory : undefined;
+      utilityInputSha256 = "utilityInputSha256" in reply ? reply.utilityInputSha256 : undefined;
       totals.calls++;
       const singleTool = "tool" in reply && reply.tool ? [reply.tool] : [];
       const tools = "tools" in reply ? reply.tools : singleTool;
@@ -547,6 +556,7 @@ export async function createWorkloadCompanion(
         streaming,
         ...(native ? { native } : {}),
         ...(memory ? { memory } : {}),
+        ...(utilityInputSha256 ? { utilityInputSha256 } : {}),
         ...(loopCall ? { loop: { ...loopCall.reply.loop, responseComplete } } : {}),
         ...(cronCall ? { cron: { ...cronCall.reply.cron, responseComplete } } : {}),
         startedAt,

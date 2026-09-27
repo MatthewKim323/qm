@@ -64,6 +64,32 @@ export function spritesFixturePath(value: unknown): string {
   return value;
 }
 
+export function spritesNativeEnvelope(result: { code: number; stdout: Buffer; stderr: Buffer }) {
+  if (result.code !== 0 || result.stderr.length !== 0) return null;
+  const newline = result.stdout.subarray(0, 256).indexOf(0x0a);
+  if (newline < 0) return null;
+  const header = result.stdout.subarray(0, newline).toString("latin1");
+  if (!/^(0|[1-9]\d*) (0|[1-9]\d*) (0|[1-9]\d*) (-1|\d+(?:\.\d+)?) (-1|\d+(?:\.\d+)?) (-1|\d+(?:\.\d+)?)$/.test(header))
+    return null;
+  const [code, stdoutBytes, stderrBytes, ...pressure] = header.split(" ").map(Number);
+  if (
+    ![code, stdoutBytes, stderrBytes].every(Number.isSafeInteger) ||
+    code! > 255 ||
+    !pressure.every(Number.isFinite) ||
+    stdoutBytes! + stderrBytes! !== result.stdout.length - newline - 1
+  )
+    return null;
+  const stdout = result.stdout.subarray(newline + 1, newline + 1 + stdoutBytes!);
+  const stderr = result.stdout.subarray(newline + 1 + stdoutBytes!);
+  return {
+    code: code!,
+    stdoutBytes: stdoutBytes!,
+    stdoutSha256: sha256(stdout),
+    stderrBytes: stderrBytes!,
+    stderrSha256: sha256(stderr),
+  };
+}
+
 function validate(profile: SpritesFixtureProfile, fixture: WorkloadFixture, env: NodeJS.ProcessEnv): string {
   workloadCheck(profile.schemaVersion === 1 && fixture.schemaVersion === 1, "Unsupported Sprites fixture schema");
   workloadCheck(
@@ -82,7 +108,7 @@ function validate(profile: SpritesFixtureProfile, fixture: WorkloadFixture, env:
   );
   workloadCheck(Number.isSafeInteger(profile.port) && profile.port >= 0 && profile.port <= 65535, "Invalid port");
   const bounds = {
-    maxSprites: [1, 16],
+    maxSprites: [1, 64],
     maxExecs: [1, 16],
     maxBytes: [1024, 64 * 1024 * 1024],
     timeoutMs: [100, 120000],
@@ -261,10 +287,16 @@ export async function createSpritesFixture(
     void tracked(
       (async () => {
         const start = performance.now();
+        const startedAt = Date.now();
         let inputBytes = 0,
           outputBytes = 0,
           status = 500,
           operation = "unknown";
+        let guestName: string | null = null,
+          targetSha256: string | null = null,
+          requestBodySha256: string | null = null,
+          responseBodySha256: string | null = null;
+        let pathSha256: string[] = [];
         const respond = (code: number, bytes: Buffer, contentType: string) =>
           new Promise<void>((resolve) => {
             if (response.destroyed) {
@@ -276,6 +308,7 @@ export async function createSpritesFixture(
             response.once("error", resolve);
             response.writeHead(code, { "content-type": contentType, "content-length": bytes.length });
             outputBytes = bytes.length;
+            responseBodySha256 = sha256(bytes);
             response.end(bytes);
           });
         try {
@@ -286,6 +319,11 @@ export async function createSpritesFixture(
           const method = request.method;
           const raw = await body(request);
           inputBytes = raw.length;
+          const admit = (paths: string[] = []) => {
+            targetSha256 = sha256(request.url!);
+            requestBodySha256 = sha256(raw);
+            pathSha256 = paths.map(sha256);
+          };
           let result: unknown,
             bytes: Buffer | undefined,
             contentType = "application/json";
@@ -293,6 +331,7 @@ export async function createSpritesFixture(
             query(url, []);
             workloadCheck(raw.length === 0, "Unexpected identity body");
             operation = "identity";
+            admit();
             result = {
               fixtureId: fixture.fixtureId,
               populationSha256: fixture.profileSha256,
@@ -314,10 +353,12 @@ export async function createSpritesFixture(
               "Unsupported sprite create fields",
             );
             const spriteName = name(input.name);
+            guestName = spriteName;
             workloadCheck(
               !guests.has(spriteName) && guests.size < profile.maxSprites,
               "Sprite limit or duplicate create",
             );
+            admit();
             const container = `qm-perf-sprite-${profile.campaignId}-${sha256(spriteName).slice(0, 8)}`;
             const guest: Guest = {
               name: spriteName,
@@ -381,10 +422,24 @@ export async function createSpritesFixture(
             const route = /^\/v1\/sprites\/([a-z0-9-]+)(?:\/(.*))?$/.exec(url.pathname);
             workloadCheck(route, "Unsupported route");
             const spriteName = name(route[1]!);
+            guestName = spriteName;
             const sub = route[2] ?? "";
             const guest = guests.get(spriteName);
-            operation = sub || method?.toLowerCase() || "unknown";
+            if (
+              [
+                "policy/network",
+                "policy/resources",
+                "fs/write",
+                "fs/read",
+                "fs/rename",
+                "checkpoint",
+                "checkpoints",
+              ].includes(sub)
+            )
+              operation = sub;
+            else if (!sub && ["GET", "DELETE"].includes(method ?? "")) operation = method!.toLowerCase();
             if (!guest) {
+              if (!sub && method === "GET" && url.searchParams.size === 0) admit();
               status = 404;
               result = { error: "not_found", code: "ENOENT" };
             } else if (!guest.id) {
@@ -392,9 +447,11 @@ export async function createSpritesFixture(
               result = { error: "creation_not_completed" };
             } else if (!sub && method === "GET") {
               query(url, []);
+              admit();
               result = { name: spriteName, status: "warm" };
             } else if (!sub && method === "DELETE") {
               query(url, []);
+              admit();
               await remove(guest);
               status = 204;
             } else if (["policy/network", "policy/resources"].includes(sub) && ["GET", "POST"].includes(method ?? "")) {
@@ -404,6 +461,7 @@ export async function createSpritesFixture(
                 guest[key] = JSON.parse(raw.toString());
                 status = 204;
               } else result = guest[key];
+              admit();
             } else if (sub === "fs/write" && method === "PUT") {
               query(url, ["path", "workingDir", "mkdirParents", "mode"]);
               workloadCheck(
@@ -413,6 +471,7 @@ export async function createSpritesFixture(
                 "Unsupported file write options",
               );
               const path = spritesFixturePath(url.searchParams.get("path"));
+              admit([path]);
               const prep = await guestCommand(guest, ["mkdir", "-p", posix.dirname(path)]);
               workloadCheck(prep.code === 0, "Guest file directory failed");
               const mode = url.searchParams.get("mode");
@@ -428,6 +487,7 @@ export async function createSpritesFixture(
               query(url, ["path", "workingDir"]);
               workloadCheck(url.searchParams.get("workingDir") === "/", "Unsupported working directory");
               const path = spritesFixturePath(url.searchParams.get("path"));
+              admit([path]);
               const read = await guestCommand(guest, ["cat", "--", path]);
               if (read.code !== 0) {
                 status = 404;
@@ -448,12 +508,14 @@ export async function createSpritesFixture(
               );
               const source = spritesFixturePath(input.source),
                 dest = spritesFixturePath(input.dest);
+              admit([source, dest]);
               const moved = await guestCommand(guest, ["mv", "--", source, dest]);
               workloadCheck(moved.code === 0, "Guest rename failed");
               result = { source, dest };
             } else if (sub === "checkpoint" && method === "POST") {
               query(url, []);
               workloadCheck(JSON.parse(raw.toString()).comment === "qm turn end", "Unsupported checkpoint request");
+              admit();
               const checkpoint = {
                 id: `fixture-${guest.checkpoints.length + 1}`,
                 create_time: new Date().toISOString(),
@@ -464,6 +526,7 @@ export async function createSpritesFixture(
               bytes = Buffer.from(`${JSON.stringify({ type: "complete", data: checkpoint.id })}\n`);
             } else if (sub === "checkpoints" && method === "GET") {
               query(url, []);
+              admit();
               result = guest.checkpoints;
             } else throw new Error("Unsupported fixture operation");
           }
@@ -480,10 +543,22 @@ export async function createSpritesFixture(
           emit({
             type: "http",
             operation,
+            method: ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS", "CONNECT", "TRACE"].includes(
+              request.method ?? "",
+            )
+              ? request.method
+              : null,
+            name: guestName,
+            targetSha256,
+            pathSha256,
+            requestBodySha256,
+            responseBodySha256,
             status,
             inputBytes,
             outputBytes,
             completed: response.writableFinished,
+            startedAt,
+            finishedAt: Date.now(),
             elapsedMs: performance.now() - start,
           });
         }
@@ -544,9 +619,18 @@ export async function createSpritesFixture(
           void tracked(
             (async () => {
               const start = performance.now();
+              const startedAt = Date.now();
               let outputBytes = 0,
                 pass = false,
                 counted = false;
+              let outer: {
+                code: number;
+                stdoutBytes: number;
+                stdoutSha256: string;
+                stderrBytes: number;
+                stderrSha256: string;
+              } | null = null;
+              let nativeEnvelope: ReturnType<typeof spritesNativeEnvelope> = null;
               const input = Buffer.concat(chunks),
                 digest = spritesScriptSha256(input.toString());
               const shape = profile.scripts.find((script) => script.sha256 === digest);
@@ -562,6 +646,14 @@ export async function createSpritesFixture(
                 await sleep(profile.delays.execMs);
                 workloadCheck(ws.readyState === 1, "Exec client disconnected");
                 const result = await guestCommand(guest, ["sh", "-c", SCRIPT_RUNNER], input);
+                outer = {
+                  code: result.code,
+                  stdoutBytes: result.stdout.length,
+                  stdoutSha256: sha256(result.stdout),
+                  stderrBytes: result.stderr.length,
+                  stderrSha256: sha256(result.stderr),
+                };
+                nativeEnvelope = spritesNativeEnvelope(result);
                 for (const [id, data] of [
                   [1, result.stdout],
                   [2, result.stderr],
@@ -600,6 +692,10 @@ export async function createSpritesFixture(
                   inputBytes: input.length,
                   outputBytes,
                   pass,
+                  outer,
+                  nativeEnvelope,
+                  startedAt,
+                  finishedAt: Date.now(),
                   elapsedMs: performance.now() - start,
                   injectedDelayMs: profile.delays.execMs,
                 });

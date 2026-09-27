@@ -161,6 +161,7 @@ test("native memory extraction receipts bind the full transcript and ordered dec
     const calls = records.filter((record) => record.type === "companion-call");
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.error, null);
+    assert.equal(calls[0]!.utilityInputSha256, promptSha256(transcript));
     assert.deepEqual(calls[0]!.memory, {
       userTextSha256: promptSha256(transcript),
       markerSha256: turns.map((_, index) => promptSha256(nativeMarker(fixture.fixtureId, "human", `owned.${index}`))),
@@ -314,6 +315,7 @@ test("native admission precedes pacing and retains exact successful or aborted r
       );
       assert.equal(terminal.length, 1);
       const call = terminal[0]!;
+      assert.equal(call.utilityInputSha256, undefined);
       for (const key of ["requestSha256", "startedAt", "systemSha256", "native", "requestBytes", "requestGzipBytes"])
         assert.deepEqual(call[key], start[key]);
       assert.ok(Number(call.finishedAt) >= Number(start.acceptedAt));
@@ -397,6 +399,27 @@ test("installed Pi streams, direct acknowledgment JSON, native loop stages and f
       ),
       "Check synthetic café",
     );
+    const titleReceipt = records.find((record) => record.type === "companion-call" && record.rule === "title")!;
+    assert.equal(titleReceipt.utilityInputSha256, promptSha256("<transcript>Synthetic café fixture</transcript>"));
+    assert.ok(!JSON.stringify(titleReceipt).includes("Synthetic café fixture"));
+    const textBlocks = companionReply(
+      {
+        model: modelId,
+        system: `${TITLE_GENERATION_PROMPT}\nCurrent working directory: ${stableCwd("qm-perf-companion-test")}`,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "café" },
+              { type: "text", text: "fixture" },
+            ],
+          },
+        ],
+      },
+      profile,
+    );
+    assert.ok(textBlocks && "utilityInputSha256" in textBlocks);
+    assert.equal(textBlocks.utilityInputSha256, promptSha256("café\nfixture"));
     setProviderBaseUrls({ anthropic: baseUrl });
     const harness = createPiHarness({ defaultModelId: modelId, titleModelId: modelId, apiKey: token });
     assert.equal(await harness.models.pickAckEmoji?.("Synthetic test", ["eyes", "mag"]), "eyes");

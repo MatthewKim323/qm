@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,10 +15,56 @@ import { createLocalWorkspaceStore } from "../../src/workspace/workspace-store.t
 import {
   createSpritesFixture,
   spritesFixturePath,
+  spritesNativeEnvelope,
   spritesScriptSha256,
   type SpritesFixtureProfile,
 } from "./workload-sprites.ts";
 import type { WorkloadFixture } from "./workload.ts";
+
+const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+
+test("native exec receipt parser preserves inner failure and rejects unsupported or corrupt envelopes", () => {
+  const stdout = Buffer.from("é\n"),
+    stderr = Buffer.from("failure\n");
+  const result = {
+    code: 0,
+    stdout: Buffer.concat([Buffer.from(`7 ${stdout.length} ${stderr.length} 0.00 0.01 1.25\n`), stdout, stderr]),
+    stderr: Buffer.alloc(0),
+  };
+  assert.deepEqual(spritesNativeEnvelope(result), {
+    code: 7,
+    stdoutBytes: stdout.length,
+    stdoutSha256: sha256(stdout),
+    stderrBytes: stderr.length,
+    stderrSha256: sha256(stderr),
+  });
+  const different = Buffer.from(result.stdout);
+  different[different.length - 2] = 120;
+  assert.notEqual(spritesNativeEnvelope({ ...result, stdout: different })?.stderrSha256, sha256(stderr));
+  for (const value of [
+    { ...result, code: 1 },
+    { ...result, stderr: Buffer.from("outer failure") },
+    { ...result, stdout: result.stdout.subarray(0, -1) },
+    { ...result, stdout: Buffer.concat([result.stdout, Buffer.from("extra")]) },
+    ...[
+      "fixture output",
+      "0 0 0\n",
+      "256 0 0 -1 -1 -1\n",
+      "-1 0 0 -1 -1 -1\n",
+      "0 -1 0 -1 -1 -1\n",
+      "0 0 0 NaN -1 -1\n",
+      "0 0 0 1e2 -1 -1\n",
+      "0 9007199254740992 0 -1 -1 -1\n",
+      "0 0 0 " + "0".repeat(256) + " -1 -1\n",
+    ].map((value) => ({ ...result, stdout: Buffer.from(value) })),
+    { ...result, stdout: Buffer.from([0xb0, ...Buffer.from(" 0 0 -1 -1 -1\n")]) },
+  ])
+    assert.equal(spritesNativeEnvelope(value), null);
+  assert.deepEqual(
+    spritesNativeEnvelope({ code: 0, stdout: Buffer.from("0 0 0 -1 -1 -1\n"), stderr: Buffer.alloc(0) }),
+    { code: 0, stdoutBytes: 0, stdoutSha256: sha256(""), stderrBytes: 0, stderrSha256: sha256("") },
+  );
+});
 
 test("script admission preserves commands while normalizing only bounded native ephemeral fields", () => {
   const first =
@@ -75,6 +121,7 @@ function referenceScripts(): string[] {
       const sandbox=createSpritesSandbox(createLocalWorkspaceStore(directory),{token:'test-token',baseUrl:fake.baseUrl,namePrefix:'qm-perf-reference',egressProxyUrl:'https://fixture-proxy.invalid'});
       const handle=await sandbox.provision([{scopeId:'personal:fixture',mode:'rw'}],{egressToken:'synthetic-egress-token'});
       await sandbox.run(handle,"printf 'fixture-command\\n'",{signal:new AbortController().signal});
+      await sandbox.run(handle,"printf 'nonzero-out\\n'; printf 'nonzero-err\\n' >&2; exit 7",{signal:new AbortController().signal});
       await sandbox.teardown(handle);
       console.log(JSON.stringify(fake.execScripts()));
     } finally {fake.cleanup();rmSync(directory,{recursive:true,force:true});}
@@ -99,7 +146,13 @@ test(
     const originalFetch = globalThis.fetch,
       originalWebSocket = globalThis.WebSocket;
     const reference = referenceScripts();
-    const scripts = [...new Set(reference.map(spritesScriptSha256))];
+    const unsupported = [
+      "printf unsupported-envelope",
+      "printf '0 5 0 -1 -1 -1\\nshortEXTRA'",
+      "printf '0 5 0 -1 -1 -1\\nshor'",
+      "printf 'invalid 5 0 -1 -1 -1\\nshort'",
+    ];
+    const scripts = [...new Set([...reference, ...unsupported].map(spritesScriptSha256))];
     const campaignId = randomUUID();
     const fixture: WorkloadFixture = {
       schemaVersion: 1,
@@ -118,7 +171,7 @@ test(
       tokenEnv: "QM_PERF_SPRITES_TEST_TOKEN",
       namePrefix: `qm-perf-${campaignId.slice(0, 8)}`,
       image: process.env.QM_PERFORMANCE_SPRITES_IMAGE!,
-      maxSprites: 3,
+      maxSprites: 2,
       maxExecs: 2,
       maxBytes: 1024 * 1024,
       timeoutMs: 20000,
@@ -158,6 +211,13 @@ test(
         ),
       );
       assert.notEqual(handles[0]!.id, handles[1]!.id);
+      const overCap = await fetch(`${origin}/v1/sprites`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: `${profile.namePrefix}-excess` }),
+      });
+      assert.equal(overCap.status, 403);
+      assert.equal(responder.totals.created, 2);
       const filesystem = new SpritesClient(token, { baseURL: origin }).sprite(handles[0]!.id).filesystem();
       const container = receipts.find(
         (receipt) => receipt.type === "guest-created" && receipt.name === handles[0]!.id,
@@ -188,11 +248,40 @@ test(
       );
       assert.ok(results.every((result) => result.code === 0 && result.stdout === "fixture-command\n"));
       assert.equal(responder.totals.peakExecs, 2);
+      const nonzero = await sandbox.run(handles[0]!, "printf 'nonzero-out\n'; printf 'nonzero-err\n' >&2; exit 7", {
+        signal: new AbortController().signal,
+      });
+      assert.equal(nonzero.code, 7);
+      assert.equal(nonzero.stdout, "nonzero-out\n");
+      assert.equal(nonzero.stderr, "nonzero-err\n");
+      const failedInner = receipts.find((receipt) => (receipt.nativeEnvelope as { code?: number } | null)?.code === 7);
+      assert.ok(failedInner);
+      assert.equal(failedInner.pass, true);
+      assert.equal((failedInner.outer as { code: number }).code, 0);
+      assert.deepEqual(failedInner.nativeEnvelope, {
+        code: 7,
+        stdoutBytes: Buffer.byteLength(nonzero.stdout),
+        stdoutSha256: sha256(nonzero.stdout),
+        stderrBytes: Buffer.byteLength(nonzero.stderr),
+        stderrSha256: sha256(nonzero.stderr),
+      });
       await Promise.all(handles.map((handle) => sandbox.teardown(handle)));
       const wsUrl = new URL(`${origin.replace("http", "ws")}/v1/sprites/${handles[0]!.id}/exec`);
       for (const value of ["sh", "-c", SCRIPT_RUNNER]) wsUrl.searchParams.append("cmd", value);
       wsUrl.searchParams.set("path", "sh");
       wsUrl.searchParams.set("stdin", "true");
+      for (const script of unsupported) {
+        const raw = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
+        await once(raw, "open");
+        raw.send(Buffer.concat([Buffer.from([0]), Buffer.from(script)]));
+        raw.send(Buffer.from([4]));
+        await once(raw, "close");
+        const receipt = receipts.find((row) => row.type === "exec" && row.scriptSha256 === spritesScriptSha256(script));
+        assert.ok(receipt);
+        assert.equal(receipt.pass, true);
+        assert.equal(receipt.nativeEnvelope, null);
+        assert.equal((receipt.outer as { code: number }).code, 0);
+      }
       const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
       await once(ws, "open");
       ws.send(Buffer.concat([Buffer.from([0]), Buffer.from("printf unreviewed")]));
@@ -215,9 +304,55 @@ test(
         body: "null",
       });
       assert.equal(badBody.status, 403);
+      const privateSuffix = "unadmitted-private-file-name";
+      const unsupportedPath = await fetch(`${origin}/v1/sprites/${handles[0]!.id}/${privateSuffix}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(unsupportedPath.status, 403);
+      assert.ok(
+        receipts.some(
+          (receipt) =>
+            receipt.type === "http" &&
+            receipt.operation === "unknown" &&
+            receipt.name === handles[0]!.id &&
+            receipt.targetSha256 === null,
+        ),
+      );
+      const rejectedPath = receipts.find(
+        (receipt) => receipt.type === "http" && receipt.operation === "fs/read" && receipt.status === 403,
+      );
+      assert.equal(rejectedPath?.targetSha256, null);
+      assert.deepEqual(rejectedPath?.pathSha256, []);
+      const writes = receipts.filter(
+        (receipt) => receipt.type === "http" && receipt.operation === "fs/write" && receipt.status === 200,
+      );
+      assert.ok(writes.length > 0);
+      for (const receipt of writes) {
+        assert.equal(receipt.method, "PUT");
+        assert.equal(typeof receipt.name, "string");
+        assert.match(receipt.targetSha256 as string, /^[a-f0-9]{64}$/);
+        assert.match(receipt.requestBodySha256 as string, /^[a-f0-9]{64}$/);
+        assert.equal((receipt.pathSha256 as string[]).length, 1);
+      }
+      const fileWrite = writes.find((receipt) => (receipt.pathSha256 as string[])[0] === sha256(modePath));
+      assert.ok(fileWrite);
+      assert.equal(fileWrite.requestBodySha256, sha256("synthetic fixture bytes"));
       assert.equal(globalThis.fetch, originalFetch);
       assert.equal(globalThis.WebSocket, originalWebSocket);
       assert.ok(!JSON.stringify(receipts).includes(token));
+      assert.ok(!JSON.stringify(receipts).includes(modePath));
+      assert.ok(!JSON.stringify(receipts).includes("synthetic fixture bytes"));
+      assert.ok(!JSON.stringify(receipts).includes(privateSuffix));
+      const oversized = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
+      await once(oversized, "open");
+      for (let index = 0; index < 3; index++)
+        oversized.send(Buffer.concat([Buffer.from([0]), Buffer.alloc(profile.maxBytes / 2, 120)]));
+      await once(oversized, "close");
+      assert.ok(
+        receipts.some(
+          (receipt) => receipt.type === "exec-frame-rejected" && Number(receipt.inputBytes) > profile.maxBytes,
+        ),
+      );
       const pending = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
       pending.on("error", () => {});
       await once(pending, "open");
@@ -248,6 +383,31 @@ test(
     }
     assert.equal(responder.totals.created, responder.totals.deleted);
     assert.equal(receipts.at(-1)?.remainingGuests, 0);
+    for (const receipt of receipts.filter((receipt) => ["http", "exec"].includes(String(receipt.type)))) {
+      assert.ok(Number.isSafeInteger(receipt.startedAt) && Number.isSafeInteger(receipt.finishedAt));
+      assert.ok(
+        Number(receipt.startedAt) <= Number(receipt.finishedAt) && Number(receipt.finishedAt) <= Number(receipt.at),
+      );
+      if (receipt.type === "exec" && receipt.outer) {
+        const outer = receipt.outer as {
+          stdoutBytes: number;
+          stdoutSha256: string;
+          stderrBytes: number;
+          stderrSha256: string;
+        };
+        assert.ok(outer.stdoutBytes >= 0 && outer.stderrBytes >= 0);
+        assert.match(outer.stdoutSha256, /^[a-f0-9]{64}$/);
+        assert.match(outer.stderrSha256, /^[a-f0-9]{64}$/);
+      }
+    }
+    await assert.rejects(
+      createSpritesFixture({ ...profile, maxSprites: 65 }, fixture, () => {}, { QM_PERF_SPRITES_TEST_TOKEN: token }),
+      /Invalid maxSprites/,
+    );
+    const ceiling = await createSpritesFixture({ ...profile, maxSprites: 64 }, fixture, () => {}, {
+      QM_PERF_SPRITES_TEST_TOKEN: token,
+    });
+    await ceiling.close();
     let failReceipt = false;
     const failedCampaign = randomUUID();
     const failed = await createSpritesFixture(
