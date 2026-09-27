@@ -55,6 +55,7 @@ export function parseRecallBlock(block: string): { title: string; steps: number 
     /##\s+(?:A previous session solved a near-identical task|Recorded procedure from a past session):\s*(.+)/.exec(
       block,
     )?.[1] ??
+    /near-identical task \("(.+?)"\)/.exec(block)?.[1] ??
     /##\s+(.+)/.exec(block)?.[1] ??
     "procedure";
   const steps = block.split("\n").filter((l) => /^\s+\d+\.\s+\[/.test(l)).length;
@@ -210,7 +211,7 @@ export function createWorldSwarmTracker(deps: WorldSwarmTrackerDeps) {
         void hud({
           kind: "memory_event",
           text: "RECALLED PROCEDURE",
-          detail: `${hit.title} · ${hit.steps} steps`,
+          detail: hit.steps ? `${hit.title} · ${hit.steps} steps` : hit.title,
         });
     };
     memorableEvents.on("recall", onRecall);

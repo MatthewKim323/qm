@@ -155,6 +155,12 @@ test("recall blocks and run deltas render for the HUD", () => {
     "  2. [execute] execute: test -s context.md",
   ].join("\n");
   assert.deepEqual(parseRecallBlock(block), { title: "Handle in person customer feedback", steps: 2 });
+  assert.deepEqual(
+    parseRecallBlock(
+      'A previous session solved a near-identical task ("Add issue.md to world directory").\nVerified by: test -s',
+    ),
+    { title: "Add issue.md to world directory", steps: 0 },
+  );
   const r = (toolCalls: number, turns: number, wallMs: number) =>
     ({ total: { toolCalls, turns, wallMs, toolErrors: 0 } }) as WorldRunReport;
   assert.equal(learnedLine(r(30, 9, 166_000), r(18, 7, 90_000)), "tool calls 30 -> 18 · turns 9 -> 7 · 166s -> 90s");
