@@ -170,9 +170,9 @@ function inboxViewSegment(viewId: string): string {
 }
 
 const INBOX_FILTERS = [
-  { id: "triaged", label: "Loop triaged", description: "Messages the Loop identified as needing your attention" },
-  { id: "human", label: "Only human", description: "Human conversations, including those that need no reply" },
-  { id: "all", label: "All messages", description: "All synced messages, including automated mail and bots" },
+  { id: "triaged", label: "Needs attention", description: "Emails identified as needing a reply or review" },
+  { id: "human", label: "From people", description: "Emails from people, including conversations that need no reply" },
+  { id: "all", label: "All emails", description: "All synced emails, including newsletters and automated mail" },
 ] as const;
 
 type InboxFilter = (typeof INBOX_FILTERS)[number]["id"];
@@ -351,9 +351,12 @@ export function itemsFor(viewId: string, status: "open" | "handled"): InboxItem[
     if (viewId === "sent") return item.status === "sent" && item.source !== "generic";
     if (status !== "open") return item.status !== "open";
     if (item.status !== "open") return false;
-    if (inboxState.filter === "all") return true;
-    if (item.automated) return false;
-    return inboxState.filter === "human" || (item.attention !== false && !item.probablyResolved);
+    if (item.source === "gmail") {
+      if (inboxState.filter === "all") return true;
+      if (item.automated) return false;
+      if (inboxState.filter === "human") return true;
+    }
+    return item.attention !== false && !item.probablyResolved;
   });
 }
 
@@ -1554,9 +1557,15 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
   const density = surface.density();
   const compact = density !== "full";
   const openItems = itemsFor(surface.viewId, "open");
+  const selectedLoop = inboxState.selected.find((loop) => loop.id === surface.viewId);
+  const showEmailFilter =
+    surface.viewId === "all" ||
+    surface.viewId === "gmail" ||
+    selectedLoop?.source === "gmail" ||
+    selectedLoop?.sources?.includes("gmail");
   let emptyMessage = "No messages in this view yet. Sync to check for new messages.";
-  if (inboxState.filter === "triaged")
-    emptyMessage = "Nothing is waiting on you. Choose Only human or All messages to see more.";
+  if (showEmailFilter && inboxState.filter === "triaged")
+    emptyMessage = "Nothing is waiting on you. Choose From people or All emails to see more emails.";
   if (surface.viewId === "sent") emptyMessage = "No sent messages yet. Sent Email and Slack replies will appear here.";
   const handledItems = itemsFor(surface.viewId, "handled");
   const setupLoops = inboxState.selected.filter(
@@ -1666,20 +1675,20 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
         ${chips} ${surface.pane ? html`<span class="inbox-toolbar-spacer"></span>${syncLineTpl(surface)}` : nothing}
       </div>
       ${
-        surface.viewId !== "sent"
+        showEmailFilter
           ? html`
               <div class="inbox-filter-bar">
                 <label class="inbox-filter">
-                  <span>Show</span>
+                  <span>Emails</span>
                   <span class="inbox-filter-control">
                     <select
-                      aria-label="Inbox filter"
+                      aria-label="Email filter"
                       aria-description=${INBOX_FILTERS.find((filter) => filter.id === inboxState.filter)?.description ?? ""}
                       .value=${live(inboxState.filter)}
                       ?disabled=${inboxState.filterBusy || inboxState.loading}
                       @change=${(event: Event) => void selectInboxFilter((event.target as HTMLSelectElement).value as InboxFilter)}
                     >
-                      ${INBOX_FILTERS.map((filter) => html`<option value=${filter.id}>${filter.label}</option>`)}
+                      ${INBOX_FILTERS.map((filter) => html`<option value=${filter.id} ?selected=${filter.id === inboxState.filter}>${filter.label}</option>`)}
                     </select>
                     ${icon(ChevronDown, 13)}
                   </span>

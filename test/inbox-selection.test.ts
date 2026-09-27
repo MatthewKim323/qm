@@ -416,7 +416,7 @@ test("the inbox feed reconciles selected owner Gmail loops before counting summa
   assert.deepEqual(refreshed, []);
 });
 
-test("inbox filters change visible messages while source counts include all open conversations", async () => {
+test("email filters leave Slack unchanged while source counts include all open conversations", async () => {
   const w = world();
   const [email, slack] = await ensureDefaultInboxLoops(w.deps.store, "alice");
   for (const [key, payload, draft] of [
@@ -442,41 +442,50 @@ test("inbox filters change visible messages while source counts include all open
   const handled = (await w.deps.items.byLoop(email!.id)).find((item) => item.sourceKey === "handled")!;
   await w.deps.items.recordAction(handled.id, { kind: "dismiss", outcome: "dismissed" });
   await w.deps.items.ingest([
-    {
+    { loopId: slack!.id, dedupeKey: "slack-pending", source: "slack", sourcePayload: {} },
+    ...(
+      [
+        ["slack-question", {}],
+        ["slack-resolved", { probablyResolved: true }],
+        ["slack-bot", { automated: true }],
+      ] as const
+    ).map(([key, payload]) => ({
       loopId: slack!.id,
-      dedupeKey: "bot",
+      dedupeKey: String(key),
       source: "slack",
-      sourcePayload: { automated: true },
-    },
+      sourcePayload: payload,
+      proposal: { by: "agent" as const, data: { body: "Draft" } },
+    })),
   ]);
   const keys = (feed: any) => feed.items.map((item: any) => item.dedupeKey).sort();
   const triaged = (await w.call()).data;
   assert.equal(triaged.filter, "triaged");
-  assert.deepEqual(keys(triaged), ["question"]);
-  assert.equal(triaged.total, 5);
+  assert.deepEqual(keys(triaged), ["question", "slack-bot", "slack-question"]);
+  assert.equal(triaged.total, 8);
   const sourceCounts = (feed: any) => feed.selected.map((loop: any) => [loop.id, loop.count]);
   assert.deepEqual(sourceCounts(triaged), [
     [email!.id, 4],
-    [slack!.id, 1],
+    [slack!.id, 4],
   ]);
   for (const [filter, expected] of [
-    ["human", ["pending", "question", "thanks"]],
-    ["all", ["bot", "pending", "question", "receipt", "thanks"]],
+    ["human", ["pending", "question", "slack-bot", "slack-question", "thanks"]],
+    ["all", ["pending", "question", "receipt", "slack-bot", "slack-question", "thanks"]],
   ] as const) {
     await w.uiState.put(uiStateId("alice", "inbox-filter"), { value: filter, updatedAt: Date.now() });
     const feed = (await w.call()).data;
     assert.equal(feed.filter, filter);
     assert.deepEqual(keys(feed), expected);
-    assert.equal(feed.total, 5);
+    assert.equal(feed.total, 8);
     assert.deepEqual(sourceCounts(feed), sourceCounts(triaged));
     assert.equal(
       feed.selected.reduce((sum: number, loop: any) => sum + loop.count, 0),
-      5,
+      8,
     );
+    assert.deepEqual(keys((await w.call("GET", null, `loopId=${slack!.id}`)).data), ["slack-bot", "slack-question"]);
     assert.deepEqual(keys((await w.call("GET", null, "view=handled")).data), ["handled"]);
     assert.deepEqual(
       keys((await w.call("GET", null, `loopId=${email!.id}`)).data),
-      expected.filter((key) => key !== "bot"),
+      expected.filter((key) => !key.startsWith("slack-")),
     );
     assert.equal((await w.call("GET", null, "", "mallory")).data.filter, "triaged");
   }
@@ -489,10 +498,10 @@ test("inbox filters change visible messages while source counts include all open
   const question = (await w.deps.items.byLoop(email!.id)).find((item) => item.sourceKey === "question")!;
   await w.deps.items.recordAction(question.id, { kind: "dismiss", outcome: "dismissed" });
   const afterDismiss = (await w.call()).data;
-  assert.equal(afterDismiss.total, 4);
+  assert.equal(afterDismiss.total, 7);
   assert.deepEqual(sourceCounts(afterDismiss), [
     [email!.id, 3],
-    [slack!.id, 1],
+    [slack!.id, 4],
   ]);
 });
 
@@ -504,6 +513,7 @@ test("inbox filters apply before pagination even when automated messages fill mu
       {
         loopId: loop!.id,
         dedupeKey: String(n),
+        source: "gmail",
         sourcePayload: { automated: n >= 5 },
         proposal: { by: "agent", data: { body: "Draft" } },
       },
@@ -541,4 +551,16 @@ test("explicit refresh filters stay consistent across saved preference changes w
   assert.equal(latest.total, 2);
   assert.equal(latest.items.length, 1);
   assert.equal((await w.call("GET", null, "filter=invalid")).status, 400);
+});
+
+test("legacy source metadata survives an empty filtered email view", async () => {
+  const w = world();
+  const loop = await ensureInboxLoop(w.deps.store, "alice");
+  await w.deps.items.ingest([
+    { loopId: loop.id, dedupeKey: "receipt", source: "gmail", sourcePayload: { automated: true } },
+  ]);
+  await w.call("PUT", { loopIds: [loop.id] });
+  const feed = (await w.call()).data;
+  assert.equal(feed.items.length, 0);
+  assert.deepEqual(feed.selected[0].sources, ["gmail"]);
 });

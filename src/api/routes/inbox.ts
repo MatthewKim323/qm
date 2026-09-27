@@ -83,9 +83,11 @@ async function inbox(ctx: ApiCtx): Promise<void> {
   const filter = ctx.url.searchParams.get("loopId");
   const open = summaries.filter((item) => item.status !== "shipped" && item.status !== "skipped");
   const attention = open.filter((item) => {
-    if (inboxFilter === "all") return true;
-    if (item.inboxPreview?.automated === true) return false;
-    if (inboxFilter === "human") return true;
+    if (item.source === "gmail") {
+      if (inboxFilter === "all") return true;
+      if (item.inboxPreview?.automated === true) return false;
+      if (inboxFilter === "human") return true;
+    }
     return (
       item.inboxPreview?.probablyResolved !== true &&
       (item.status === "ready" || (item.status === "failed" && Boolean(item.parkedReason)))
@@ -129,7 +131,14 @@ async function inbox(ctx: ApiCtx): Promise<void> {
         id: loop.id,
         name: loop.name,
         icon: loop.icon,
-        sources: loop.sources,
+        sources: [
+          ...new Set([
+            ...(loop.sources ?? []),
+            ...summaries
+              .filter((item) => item.loopId === loop.id)
+              .flatMap((item) => (item.source ? [item.source] : [])),
+          ]),
+        ],
         count: counts.get(loop.id) ?? 0,
         state: loop.state,
         cronId: loop.cronId,

@@ -45,6 +45,7 @@ async function inboxUi(t: TestContext) {
   reset = inbox.resetInboxState;
   const host = document.querySelector<HTMLElement>("#inbox")!;
   const mount = (options = {}) => {
+    pane?.dispose();
     pane = inbox.mountInboxPane({ host, viewId: "all", density: () => "full", onDensityChange() {}, ...options });
   };
   return { dom, vite, host, mount, inbox };
@@ -112,7 +113,7 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
     }
     assert.fail("inbox did not settle");
   };
-  const filterSelect = () => host.querySelector<HTMLSelectElement>('select[aria-label="Inbox filter"]')!;
+  const filterSelect = () => host.querySelector<HTMLSelectElement>('select[aria-label="Email filter"]')!;
   const chooseFilter = (value: string) => {
     const select = filterSelect();
     select.value = value;
@@ -129,7 +130,7 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
   assertTabCounts();
   assert.deepEqual(
     [...host.querySelectorAll(".inbox-filter option")].map((element) => element.textContent?.trim()),
-    ["Loop triaged", "Only human", "All messages"],
+    ["Needs attention", "From people", "All emails"],
   );
   assert.equal(filterSelect().value, "triaged");
   assert.deepEqual(titles(), ["Please review the launch plan"]);
@@ -190,4 +191,59 @@ test("inbox filters persist, preserve Sent, and keep refreshes consistent", asyn
     );
   }
   resetInboxState();
+});
+
+test("email filters appear only on email views and leave other sources unchanged", async (t) => {
+  const {
+    host,
+    mount,
+    inbox: { inboxState, itemsFor, toInboxItem },
+  } = await inboxUi(t);
+  inboxState.loaded = true;
+  inboxState.fetchedAt = Date.now();
+  inboxState.selected = [
+    { id: "email", name: "Email", sources: ["gmail"], count: 3 },
+    { id: "chat", name: "Slack", source: "slack", count: 4 },
+    { id: "custom", name: "Custom", sources: ["generic"], count: 1 },
+    { id: "empty-email", name: "Empty email", source: "gmail", count: 0 },
+    { id: "mixed", name: "Mixed", sources: ["gmail", "slack"], count: 0 },
+  ];
+  inboxState.items = [
+    { id: "email-ready", loopId: "email", source: "gmail", state: "held", sourcePayload: {} },
+    {
+      id: "email-resolved",
+      loopId: "email",
+      source: "gmail",
+      state: "held",
+      sourcePayload: { probablyResolved: true },
+    },
+    { id: "email-automated", loopId: "email", source: "gmail", state: "pending", sourcePayload: { automated: true } },
+    { id: "slack-ready", loopId: "chat", source: "slack", state: "held", sourcePayload: {} },
+    { id: "slack-bot", loopId: "chat", source: "slack", state: "held", sourcePayload: { automated: true } },
+    { id: "slack-resolved", loopId: "chat", source: "slack", state: "held", sourcePayload: { probablyResolved: true } },
+    { id: "slack-pending", loopId: "chat", source: "slack", state: "pending", sourcePayload: {} },
+    { id: "generic-pending", loopId: "custom", source: "generic", state: "pending", sourcePayload: {} },
+  ].map(toInboxItem);
+  const ids = (view: string) => itemsFor(view, "open").map((item: { id: string }) => item.id);
+  for (const [filter, emails] of [
+    ["triaged", ["email-ready"]],
+    ["human", ["email-ready", "email-resolved"]],
+    ["all", ["email-ready", "email-resolved", "email-automated"]],
+  ] as const) {
+    inboxState.filter = filter;
+    assert.deepEqual(ids("all"), [...emails, "slack-ready", "slack-bot"]);
+    assert.deepEqual(ids("email"), emails);
+    assert.deepEqual(ids("chat"), ["slack-ready", "slack-bot"]);
+    assert.deepEqual(ids("custom"), []);
+    for (const viewId of ["all", "gmail", "email", "empty-email", "mixed"]) {
+      mount({ viewId });
+      assert.equal(host.querySelector(".inbox-filter > span")?.textContent, "Emails");
+      assert.equal(host.querySelector<HTMLSelectElement>('select[aria-label="Email filter"]')?.value, filter);
+    }
+    for (const viewId of ["slack", "chat", "custom", "sent"]) {
+      mount({ viewId });
+      assert.equal(host.querySelector(".inbox-filter"), null);
+      assert.doesNotMatch(host.querySelector(".inbox-zero")?.textContent ?? "", /Choose From people/);
+    }
+  }
 });
